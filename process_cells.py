@@ -46,10 +46,12 @@ AP_RAD = 1.5
 def get_args():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--tract', type=int, default=4568)
-    parser.add_argument('--patch', type=int, default=0)
+    parser.add_argument('--tract', type=int, required=True)
+    parser.add_argument('--patch', type=int, required=True)
+    parser.add_argument('--seed', type=int, required=True)
+    parser.add_argument('--outfile', required=True)
+    parser.add_argument('--progress', action='store_true')
     parser.add_argument('--mdet', action='store_true')
-    parser.add_argument('--seed', type=int)
     return parser.parse_args()
 
 
@@ -1397,7 +1399,7 @@ def write_output(fname, st, cell_info, tract, patch, seed, with_mdet):
         fits.write_table(cell_info, extname='cell_info', compress=True)
 
 
-def main(tract, patch, seed, with_mdet):
+def main(tract, patch, seed, with_mdet, outfile, progress):
     from tqdm import trange
     rng = np.random.RandomState(seed)
 
@@ -1414,7 +1416,7 @@ def main(tract, patch, seed, with_mdet):
     fname = get_fname(tract=tract, patch=patch, with_mdet=with_mdet)
     dir = get_dir(tract)
     if not os.path.exists(dir):
-        os.makedirs(dir)
+        os.makedirs(dir, exist_ok=True)
 
     print(fname)
 
@@ -1433,15 +1435,18 @@ def main(tract, patch, seed, with_mdet):
         # import IPython; IPython.embed()
         deep_coadds.append(deep_coadd)
 
+    if progress:
+        tri = trange(1, 21, desc='cell_i', ncols=80, ascii=True)
+        trj = trange(1, 21, desc='cell_j', ncols=80, ascii=True, leave=False)
+    else:
+        tri = range(1, 21)
+        trj = range(1, 21)
+
     cell_info_list = []
     ncell = 0
     nkeep = 0
-    for cell_i in trange(
-        1, 21, desc='cell_i', ncols=80, ascii=True,
-    ):
-        for cell_j in trange(
-            1, 21, desc='cell_j', ncols=80, ascii=True, leave=False,
-        ):
+    for cell_i in tri:
+        for cell_j in trj:
 
             ncell += 1
 
@@ -1486,7 +1491,7 @@ def main(tract, patch, seed, with_mdet):
     st = np.concatenate(dlist)
 
     write_output(
-        fname=fname,
+        fname=outfile,
         st=st,
         cell_info=cell_info,
         tract=tract,
@@ -1503,4 +1508,6 @@ if __name__ == '__main__':
         seed=_args.seed,
         tract=_args.tract,
         patch=_args.patch,
+        progress=_args.progress,
+        outfile=_args.outfile,
     )
