@@ -32,6 +32,7 @@ DM_OUT = DM_NO_DATA | DM_DETECTION_EDGE
 from ngmix.flags import NO_ATTEMPT  # noqa
 PSF_FAILURE = 2**21
 BAD_BBOX = 2**24
+ZERO_WEIGHTS = 2**25
 
 MIN_GOOD_FRAC = 0.2
 
@@ -41,6 +42,8 @@ OVERLAP_HIGH = 200
 
 SKYMAP_VERS = 'lsst_cells_v2'
 AP_RAD = 1.5
+
+MFRAC_FWHM = 1.2
 
 
 def get_args():
@@ -237,7 +240,7 @@ def _get_bound(x, stamp_size, imsize):
     return xstart, xend
 
 
-def make_cell_obs(image, var, good, noise, psf_image, jacobian):
+def make_cell_obs(image, var, good, noise, mfrac, psf_image, jacobian):
     import ngmix
 
     psf_jacobian = jacobian.copy()
@@ -261,6 +264,7 @@ def make_cell_obs(image, var, good, noise, psf_image, jacobian):
         weight=weight,
         bmask=bmask,
         noise=noise,
+        mfrac=mfrac,
         jacobian=jacobian,
         psf=psf_obs,
     )
@@ -300,7 +304,12 @@ def extract_stamp_obs(obs, icat, stamp_size=49):
         y=icat['y'],
         stamp_size=stamp_size,
     )
-
+    mfrac_stamp, _, _ = get_stamp(
+        image=obs.mfrac,
+        x=icat['x'],
+        y=icat['y'],
+        stamp_size=stamp_size,
+    )
     weight, _, _ = get_stamp(
         image=obs.weight,
         x=icat['x'],
@@ -317,6 +326,7 @@ def extract_stamp_obs(obs, icat, stamp_size=49):
         image=stamp,
         weight=weight,
         noise=noise_stamp,
+        mfrac=mfrac_stamp,
         jacobian=jacobian,
         psf=obs.psf.copy(),
         meta=obs.meta,
@@ -348,9 +358,16 @@ def do_single_fits(mbobs, weights, sxcat, rng):
         Which rows of sxcat were kept; stamps hitting an edge are
         dropped
     """
+    import ngmix
+    from ngmix import GMixFatalError
 
     bands = [obslist[0].meta['band'] for obslist in mbobs]
     cat = get_struct(bands=bands, n=sxcat.size)
+
+    mfrac_weight = ngmix.GMixModel(
+        [0, 0, 0, 0, ngmix.moments.fwhm_to_T(MFRAC_FWHM), 1],
+        'gauss',
+    )
 
     psf_res = fit_and_set_mcal_psfs(
         mbobs=mbobs, weights=weights, rng=rng,
@@ -365,7 +382,7 @@ def do_single_fits(mbobs, weights, sxcat, rng):
                     mbobs=mbobs,
                     icat=sxcat[i],
                 )
-                # flags are explicitly set
+                # # flags are explicitly set
                 fit_struct = fit_gauss(
                     rng=rng,
                     mbobs=stamp_mbobs,
@@ -373,10 +390,18 @@ def do_single_fits(mbobs, weights, sxcat, rng):
 
                 cat[i] = fit_struct
 
+                cat['mfrac'][i] = calculate_mfrac(
+                    mbobs=stamp_mbobs,
+                    mfrac_weight=mfrac_weight,
+                )
+
             except IndexError as err:
                 cat['flags'][i] = BAD_BBOX
-                if True:
-                    print(f'stamp for obj {i} hit edge: {err}')
+                print(f'stamp for obj {i} hit edge: {err}')
+            except GMixFatalError as err:
+                cat['flags'][i] = ZERO_WEIGHTS
+                print(f'obj {i}: {err}')
+
     else:
         cat['flags'] = PSF_FAILURE
 
@@ -384,6 +409,26 @@ def do_single_fits(mbobs, weights, sxcat, rng):
     _set_mcal_psfs(st=cat, psf_res=psf_res)
 
     return cat
+
+
+def calculate_mfrac(mbobs, mfrac_weight):
+
+    mfrac = mbobs[0][0].mfrac.copy()
+
+    for iband, obslist in enumerate(mbobs):
+        if iband == 0:
+            mfrac = obslist[0].mfrac.copy()
+        else:
+            mfrac[:, :] = np.maximum(mfrac, obslist[0].mfrac)
+
+    mfrac_obs = mbobs[0][0].copy()
+
+    with mfrac_obs.writeable():
+        mfrac_obs.image[:, :] = mfrac
+        mfrac_obs.weight[:, :] = 1.0
+
+    stats = mfrac_weight.get_weighted_sums(mfrac_obs, MFRAC_FWHM * 2)
+    return stats["sums"][5] / stats["wsum"]
 
 
 def fit_gauss(rng, mbobs):
@@ -759,6 +804,7 @@ def get_struct(bands, n=1):
         ('flags', 'i4'),
         ('is_primary', bool),
         ('deblend_flags', 'i4'),
+        ('mfrac', 'f4'),
 
         ('xcell', 'f4'),
         ('ycell', 'f4'),
@@ -956,7 +1002,8 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs):
 
         if good_frac > MIN_GOOD_FRAC:
 
-            noise = deep_coadd.noise_realizations[0][bbox].array
+            noise = deep_coadd.noise_realizations[0][bbox].array.copy()
+            mfrac = deep_coadd.mask_fractions["rejected"][bbox].array.copy()
             image = deep_coadd.image[bbox].array.copy()
 
             psf = deep_coadd.psf
@@ -981,6 +1028,7 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs):
                 var=var,
                 good=good,
                 noise=noise,
+                mfrac=mfrac,
                 psf_image=psf_image,
                 jacobian=cell_jacobian,
             )
@@ -1170,18 +1218,18 @@ def _ap_kern_kern(x, m, h):
 
 
 def do_metacal_and_process(mbobs, rng):
+    import esutil as eu
+
     odict = do_all_metacal(mbobs=mbobs, rng=rng)
 
     dlist = []
     for key, mcal_mbobs in odict.items():
-        # print(f'    processing {key}')
-
         st = process_one_mbobs(mbobs=mcal_mbobs, rng=rng)
 
         st['mcal_step'] = 'ns' if key == 'noshear' else key
         dlist.append(st)
 
-    return np.concatenate(dlist)
+    return eu.numpy_util.combine_arrlist(dlist)
 
 
 def do_all_metacal(mbobs, rng):
@@ -1189,8 +1237,6 @@ def do_all_metacal(mbobs, rng):
 
     band_dicts = []
     for iband, obslist in enumerate(mbobs):
-        # print(f'    metacal band {iband}')
-
         band_dict = do_metacal_one_band(
             obs=obslist[0],
             rng=rng,
@@ -1401,6 +1447,8 @@ def write_output(fname, st, cell_info, tract, patch, seed, with_mdet):
 
 def main(tract, patch, seed, with_mdet, outfile, progress):
     from tqdm import trange
+    import esutil as eu
+
     rng = np.random.RandomState(seed)
 
     butler = Butler('dp2_prep_future', collections=["LSSTCam/runs/DRP/DP2"])
@@ -1408,8 +1456,6 @@ def main(tract, patch, seed, with_mdet, outfile, progress):
     tract_info = skymap[tract]
     wcs = tract_info.wcs
 
-    # tract = 4568
-    # tract = 5650
     dlist = []
 
     bands = ['r', 'i', 'z']
@@ -1431,22 +1477,17 @@ def main(tract, patch, seed, with_mdet, outfile, progress):
         print(data_id)
         deep_coadd = butler.get('deep_coadd', dataId=data_id)
         deep_coadd.apply_background(None)
-
-        # import IPython; IPython.embed()
         deep_coadds.append(deep_coadd)
-
-    if progress:
-        tri = trange(1, 21, desc='cell_i', ncols=80, ascii=True)
-        trj = trange(1, 21, desc='cell_j', ncols=80, ascii=True, leave=False)
-    else:
-        tri = range(1, 21)
-        trj = range(1, 21)
 
     cell_info_list = []
     ncell = 0
     nkeep = 0
-    for cell_i in tri:
-        for cell_j in trj:
+    for cell_i in trange(
+        1, 21, desc='cell_i', ncols=80, ascii=True,
+    ):
+        for cell_j in trange(
+            1, 21, desc='cell_j', ncols=80, ascii=True, leave=False,
+        ):
 
             ncell += 1
 
@@ -1487,8 +1528,8 @@ def main(tract, patch, seed, with_mdet, outfile, progress):
 
     print(f'kept {nkeep}/{ncell} {nkeep / ncell:g}')
 
-    cell_info = np.concatenate(cell_info_list)
-    st = np.concatenate(dlist)
+    cell_info = eu.numpy_util.combine_arrlist(cell_info_list)
+    st = eu.numpy_util.combine_arrlist(dlist)
 
     write_output(
         fname=outfile,
