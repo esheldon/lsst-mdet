@@ -23,6 +23,7 @@ python process_cells.py \
     --mdet
 """
 
+#SBATCH --mem-per-cpu=2.0G
 
 SLURM_TEMPLATE = r'''#!/bin/bash
 # Name of the job
@@ -35,8 +36,6 @@ SLURM_TEMPLATE = r'''#!/bin/bash
 
 # Number of cores, in this case one
 #SBATCH --ntasks-per-node=1
-
-#SBATCH --mem-per-cpu=1.5G
 
 # Walltime (job duration)
 #SBATCH --time=%(time)s
@@ -61,14 +60,14 @@ def write_script():
 
 
 def get_job_name(tract, patch):
-    return f'{tract:05d}-{patch:05d}'
+    return f'{tract:05d}-{patch:05d}-mdet'
 
 
 def get_outfile(tract, patch):
     import os
 
     job_name = get_job_name(tract=tract, patch=patch)
-    fname = f'cat-{job_name}-mdet.fits'
+    fname = f'{job_name}.fits'
     tract_dir = get_tract_dir(tract)
     return os.path.join(tract_dir, fname)
 
@@ -152,7 +151,7 @@ def get_args():
     parser.add_argument('--good-cells', default='good-cells.fits')
     parser.add_argument('--seed', type=int, required=True)
     parser.add_argument('--njobs', type=int)
-    parser.add_argument('--walltime', default='02:00:00',
+    parser.add_argument('--walltime', default='03:00:00',
                         help=('walltime for each job, e.g. 01:00:00'))
 
     return parser.parse_args()
