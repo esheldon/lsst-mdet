@@ -36,6 +36,8 @@ SLURM_TEMPLATE = r'''#!/bin/bash
 # Number of cores, in this case one
 #SBATCH --ntasks-per-node=1
 
+#SBATCH --mem-per-cpu=1.5G
+
 # Walltime (job duration)
 #SBATCH --time=%(time)s
 
@@ -150,7 +152,7 @@ def get_args():
     parser.add_argument('--good-cells', default='good-cells.fits')
     parser.add_argument('--seed', type=int, required=True)
     parser.add_argument('--njobs', type=int)
-    parser.add_argument('--walltime', default='01:00:00',
+    parser.add_argument('--walltime', default='02:00:00',
                         help=('walltime for each job, e.g. 01:00:00'))
 
     return parser.parse_args()
