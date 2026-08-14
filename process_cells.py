@@ -1479,16 +1479,23 @@ def main(tract, patch, seed, with_mdet, outfile, progress):
         deep_coadd.apply_background(None)
         deep_coadds.append(deep_coadd)
 
+    if progress:
+        mrng_i = trange(1, 21, desc='cell_i', ncols=80, ascii=True)
+    else:
+        mrng_i = range(1, 21)
+
     cell_info_list = []
     ncell = 0
     nkeep = 0
-    for cell_i in trange(
-        1, 21, desc='cell_i', ncols=80, ascii=True,
-    ):
-        for cell_j in trange(
-            1, 21, desc='cell_j', ncols=80, ascii=True, leave=False,
-        ):
+    for cell_i in mrng_i:
+        if progress:
+            mrng_j = trange(
+                1, 21, desc='cell_j', ncols=80, ascii=True, leave=False,
+            )
+        else:
+            mrng_j = range(1, 21)
 
+        for cell_j in mrng_j:
             ncell += 1
 
             mbobs, cell_info = pull_mbobs(
