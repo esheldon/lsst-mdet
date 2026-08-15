@@ -54,6 +54,7 @@ def get_args():
     parser.add_argument('--seed', type=int, required=True)
     parser.add_argument('--outfile', required=True)
     parser.add_argument('--progress', action='store_true')
+    parser.add_argument('--redo-bg', action='store_true')
     parser.add_argument('--mdet', action='store_true')
     return parser.parse_args()
 
@@ -400,7 +401,7 @@ def do_single_fits(mbobs, weights, sxcat, rng):
                 print(f'stamp for obj {i} hit edge: {err}')
             except GMixFatalError as err:
                 cat['flags'][i] = ZERO_WEIGHTS
-                print(f'obj {i}: {err}')
+                # print(f'obj {i}: {err}')
 
     else:
         cat['flags'] = PSF_FAILURE
@@ -1445,7 +1446,87 @@ def write_output(fname, st, cell_info, tract, patch, seed, with_mdet):
         fits.write_table(cell_info, extname='cell_info', compress=True)
 
 
-def main(tract, patch, seed, with_mdet, outfile, progress):
+def redo_background(deep_coadd):
+    import sep
+
+    image = deep_coadd.image.array
+    var = deep_coadd.variance.array
+    mask = deep_coadd.mask.array[:, :, 0]
+    noise = deep_coadd.noise_realizations[0].array
+
+    good = (
+        np.isfinite(var)
+        & np.isfinite(noise)
+        & (mask & DM_OUT == 0)
+    )
+    bad = ~good
+
+    bkg = sep.Background(image, mask=bad)
+    # image -= bkg.back()
+
+    objects, seg = sep.extract(
+        image - bkg.back(),
+        1.5,
+        mask=bad,
+        err=bkg.globalrms,
+        segmentation_map=True,
+    )
+    new_good = good & (seg == 0)
+    bad = ~new_good
+    bkg = sep.Background(image, mask=bad)
+
+    for i in range(0):
+        objects, seg = sep.extract(
+            image,
+            1.0,
+            mask=bad,
+            err=bkg.globalrms,
+            segmentation_map=True,
+        )
+
+        new_good = good & (seg == 0)
+        bad = ~new_good
+        bkg = sep.Background(image, mask=bad)
+
+        image -= bkg.back()
+
+    image[:, :] -= bkg.back()
+
+    w = np.where(new_good)
+    medvar = np.median(var[w])
+
+    noise_factor = bkg.globalrms / np.sqrt(medvar)
+    # noise_factor = bkg.globalrms / noise.std()
+    print(f'    band: {deep_coadd.band} noise_factor: {noise_factor:g}')
+
+    noise[:, :] *= noise_factor
+    var[:, :] *= noise_factor ** 2
+
+
+def redo_background_old(deep_coadd):
+    import sep
+
+    image = deep_coadd.image.array
+    var = deep_coadd.variance.array
+    mask = deep_coadd.mask.array[:, :, 0]
+    noise = deep_coadd.noise_realizations[0].array
+
+    good = np.isfinite(var) & (mask & DM_OUT == 0)
+    w = np.where(good)
+
+    bkg = sep.Background(image, mask=~good)
+    image[:, :] -= bkg.back()
+
+    medvar = np.median(var[w])
+
+    noise_factor = bkg.globalrms / np.sqrt(medvar)
+    print(f'    band: {deep_coadd.band} noise_factor: {noise_factor:g}')
+
+    noise[:, :] *= noise_factor
+    var[:, :] *= noise_factor ** 2
+
+
+def main(tract, patch, seed, with_mdet, redo_bg, outfile, progress):
     from tqdm import trange
     import esutil as eu
 
@@ -1477,6 +1558,8 @@ def main(tract, patch, seed, with_mdet, outfile, progress):
         print(data_id)
         deep_coadd = butler.get('deep_coadd', dataId=data_id)
         deep_coadd.apply_background(None)
+        if redo_bg:
+            redo_background(deep_coadd)
         deep_coadds.append(deep_coadd)
 
     if progress:
@@ -1557,5 +1640,6 @@ if __name__ == '__main__':
         tract=_args.tract,
         patch=_args.patch,
         progress=_args.progress,
+        redo_bg=_args.redo_bg,
         outfile=_args.outfile,
     )
