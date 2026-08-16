@@ -34,8 +34,11 @@ from ngmix.flags import NO_ATTEMPT  # noqa
 PSF_FAILURE = 2 ** 21
 BAD_BBOX = 2 ** 22
 ZERO_WEIGHTS = 2 ** 23
-# FLAG_DEBLEND_FAILED = 2 ** 24
+FLAG_EXTRA_DET_OFF_SEG = 2 ** 24
 FLAG_NOT_CONVERGED = 2 ** 25
+FLAG_DUPLICATE_EXTRA = 2 ** 26
+
+R_DUP_FIT = 1.5
 
 MIN_GOOD_FRAC = 0.2
 
@@ -719,6 +722,8 @@ def fit_deblend(
     sxcat,
     seg,
     rng,
+    extra_detections=None,
+    extra_fixcen=None,
     show=False,
 ):
     """
@@ -780,7 +785,7 @@ def fit_deblend(
         sxcat.size: the extra-detection rows are not covered
     """
     import numpy as np
-    # from ngmix.moments import fwhm_to_T
+    from ngmix.moments import fwhm_to_T
     from ngmix.prepsfadmom.prep import choose_fwhm_smooth
     from ngmix import GMixFatalError
 
@@ -835,7 +840,7 @@ def fit_deblend(
     )
 
     fwhm_smooth = choose_fwhm_smooth(mbobs, rng=rng)
-    # Tsmooth = fwhm_to_T(fwhm_smooth)
+    Tsmooth = fwhm_to_T(fwhm_smooth)
 
     groups = get_groups(sxcat=sxcat, seg=seg)
 
@@ -846,60 +851,54 @@ def fit_deblend(
     # seg background are not fit and their rows flagged
     nsx = sxcat.size
     n_extra = 0
-    # off_seg = []
-    # if extra_detections is not None:
-    #     extra_detections = np.atleast_2d(extra_detections)
-    #     n_extra = len(extra_detections)
-    #     groups = [list(g) for g in groups]
-    #     num_to_group = {}
-    #     for gid, group in enumerate(groups):
-    #         for i in group:
-    #             num_to_group[int(sxcat['number'][i])] = gid
-    #     Tguess_inj = float(
-    #         np.clip(Tsmooth, TGUESS_RANGE[0], TGUESS_RANGE[1])
-    #     )
-    #     dim_r, dim_c = seg.shape
-    #     for k, (x, y) in enumerate(extra_detections):
-    #         objects.append(dict(
-    #             v=(y - jrow) * scale,
-    #             u=(x - jcol) * scale,
-    #             type=model,
-    #             Tguess=Tguess_inj,
-    #             fixcen=bool(
-    #                 extra_fixcen is not None and extra_fixcen[k]
-    #             ),
-    #             **bdf_entries,
-    #         ))
-    #         ir = int(round(y))
-    #         ic = int(round(x))
-    #         label = (
-    #             int(seg[ir, ic])
-    #             if 0 <= ir < dim_r and 0 <= ic < dim_c else 0
-    #         )
-    #         if label in num_to_group:
-    #             groups[num_to_group[label]].append(nsx + k)
-    #         else:
-    #             off_seg.append(nsx + k)
+    off_seg = []
+    if extra_detections is not None:
+        extra_detections = np.atleast_2d(extra_detections)
+        n_extra = len(extra_detections)
+        groups = [list(g) for g in groups]
+        num_to_group = {}
+        for gid, group in enumerate(groups):
+            for i in group:
+                num_to_group[int(sxcat['number'][i])] = gid
+        Tguess_inj = float(
+            np.clip(Tsmooth, tguess_range[0], tguess_range[1])
+        )
+        dim_r, dim_c = seg.shape
+        for k, (x, y) in enumerate(extra_detections):
+            v, u = jacobian.get_vu(row=y, col=x)
+            objects.append(dict(
+                v=v,
+                u=u,
+                type=model,
+                Tguess=Tguess_inj,
+                fixcen=bool(
+                    extra_fixcen is not None and extra_fixcen[k]
+                ),
+            ))
+            ir = int(round(y))
+            ic = int(round(x))
+            label = (
+                int(seg[ir, ic])
+                if 0 <= ir < dim_r and 0 <= ic < dim_c else 0
+            )
+            if label in num_to_group:
+                groups[num_to_group[label]].append(nsx + k)
+            else:
+                off_seg.append(nsx + k)
 
     cat = get_struct(bands=bands, n=nsx + n_extra)
 
-    # cat['color_det'][nsx:] = 1
+    cat['color_det'][nsx:] = 1
     # extras have no sep flux_auto and keep the nan init
     # cat['s2n_det'][:nsx] = s2n_det
-    # for idx in off_seg:
-    #     cat['flags'][idx] = FLAG_EXTRA_DET_OFF_SEG
+    for idx in off_seg:
+        cat['flags'][idx] = FLAG_EXTRA_DET_OFF_SEG
     # cat['psf_flags'] = psf_res['flags']
     # if psf_res['flags'] == 0:
     #     cat['psf_T'] = psf_res['T']
 
-    # the final per-group fit for the visualization: pass-2 refits
-    # overwrite the pass-1 entries, so each group is shown once with
-    # the measurements that landed in the catalog
-    # group_shows = {}
-
     # pass 1: fit each group with no knowledge of the rest of the
     # field
-    # results = {}
     for gid, group in enumerate(groups):
 
         cat['group_size'][group] = len(group)
@@ -930,7 +929,6 @@ def fit_deblend(
                     bands=bands,
                     jacobian=jacobian,
                 )
-                # results[i] = obj_res
 
             cat['numiter'][group] = res['numiter']
 
@@ -952,17 +950,6 @@ def fit_deblend(
                 title=f'blend group {gid}',
             )
 
-    # if show:
-    #     for gid in sorted(group_shows):
-    #         robjs = group_shows[gid]
-    #         show_group(
-    #             mbobs=mbobs,
-    #             seg=seg,
-    #             objects=robjs,
-    #             group=groups[gid],
-    #             title=f'blend group {gid}',
-    #         )
-
     # flag extra rows whose fitted centers converged onto a sep
     # row's fitted center: nuisance components of the same object.
     # They stay in the fit -- they soak crowd light and profile
@@ -970,17 +957,17 @@ def fit_deblend(
     # must not enter downstream selections (a fraction would pass
     # the standard cuts).  Convergence is only meaningful when the
     # centers are refit, so this requires recenter
-    # if n_extra and recenter:
-    #     xf, yf = cat['x_fit'], cat['y_fit']
-    #     for k in range(n_extra):
-    #         i = nsx + k
-    #         if cat['flags'][i] != 0:
-    #             continue
-    #         d2 = np.nanmin(
-    #             (xf[:nsx] - xf[i]) ** 2 + (yf[:nsx] - yf[i]) ** 2
-    #         )
-    #         if d2 < R_DUP_FIT ** 2:
-    #             cat['flags'][i] |= FLAG_DUPLICATE_EXTRA
+    if n_extra and recenter:
+        xf, yf = cat['x_fit'], cat['y_fit']
+        for k in range(n_extra):
+            i = nsx + k
+            if cat['flags'][i] != 0:
+                continue
+            d2 = np.nanmin(
+                (xf[:nsx] - xf[i]) ** 2 + (yf[:nsx] - yf[i]) ** 2
+            )
+            if d2 < R_DUP_FIT ** 2:
+                cat['flags'][i] |= FLAG_DUPLICATE_EXTRA
 
     cat['xcell'] = sxcat['x']
     cat['ycell'] = sxcat['y']
@@ -2022,6 +2009,18 @@ def process_one_mbobs(mbobs, rng, show):
 
     is_primary = get_primary(sxcat)
 
+    if True:
+        extra_detections = get_s2_extra_detections(
+            mbobs=mbobs,
+            detobs=detect_obs,
+            sxcat=sxcat,
+            seg=seg,
+            rng=rng,
+            prior_extras=None,
+        )
+    else:
+        extra_detections = None
+
     if TRIM_TO_PRIMARY:
         # when deblending we need to process all and trim
         # afterward
@@ -2029,7 +2028,7 @@ def process_one_mbobs(mbobs, rng, show):
         sxcat = sxcat[w]
         is_primary = is_primary[w]
 
-    if False:
+    if True:
         cat = do_single_fits(
             mbobs=mbobs,
             weights=weights,
@@ -2041,6 +2040,7 @@ def process_one_mbobs(mbobs, rng, show):
             mbobs=mbobs,
             weights=weights,
             sxcat=sxcat,
+            extra_detections=extra_detections,
             seg=seg,
             rng=rng,
             show=show,
@@ -2049,6 +2049,215 @@ def process_one_mbobs(mbobs, rng, show):
     cat['is_primary'] = is_primary
 
     return cat
+
+
+# starlet scale-2 extra detections: the wavelet plane index
+# (0-offset; plane 1 is the psf-matched band for ~4 px seeing),
+# the exclusion radius vs sep and prior extras (4 px removes the
+# near-degenerate pairs that destabilize the deblend; see
+# docs/detection-adaptive-null), the mutual dedupe radius, and
+# the number of noise realizations for the per-field threshold
+# calibration
+
+S2_JSCALE = 1
+S2_EXTRA_MIN_SEP = 4.0
+S2_EXTRA_DUP = 1.5
+S2_NREAL = 20
+
+
+def get_s2_extra_detections(
+    mbobs,
+    detobs,
+    sxcat,
+    seg,
+    rng,
+    prior_extras=None,
+):
+    """
+    Extra detections from the seg-gated starlet scale-2 band: the
+    psf-homogenized band images, zeroed outside the seg islands,
+    are transformed to the wavelet plane matching the psf scale
+    and summed with inverse-variance weights measured from the
+    noise fields through the same transform.  Detection runs
+    directly on that plane (no extra kernel: it re-merges close
+    pairs) with the effective threshold set per field by the
+    empirical quantile of pure noise through the identical
+    processing, at the sep-matched per-pixel false rate.  The
+    channel is color-blind scale contrast, complementary to the
+    color filters; see docs/detection-adaptive-null.
+
+    Peaks at least S2_EXTRA_MIN_SEP pixels from every sep
+    detection and every prior extra (and S2_EXTRA_DUP apart) are
+    returned for fit_deblend extra_detections; inject them with
+    fixed centers (extra_fixcen), the validated stable setting.
+
+    Parameters
+    ----------
+    mbobs: ngmix.MultiBandObsList
+        The per-band observations with noise fields
+    detobs: ngmix.Observation
+        The detection coadd; its jacobian frames the positions
+    sxcat: array with fields
+        The sep catalog from the coadd
+    seg: array
+        The sep segmentation map
+    rng: np.random.RandomState
+        For the psf size measurements and the calibration noise
+        realizations
+    prior_extras: (N, 2) array, optional
+        Extra detections already accepted (e.g. the color-filter
+        extras), excluded against like the sep catalog
+
+    Returns
+    -------
+    (N, 2) array of (x, y) 0-offset pixel positions
+    """
+    import numpy as np
+    from ngmix.moments import T_to_fwhm, fwhm_to_sigma
+    import sxdes
+    from scipy.stats import norm
+    from scipy.ndimage import gaussian_filter
+    from . import detect
+    from .fitting import _get_admom_runner
+
+    khat = detect.make_kernel()
+    khat = khat / khat.sum()
+    p0 = norm.sf(0.8 / np.sqrt((khat ** 2).sum()))
+
+    nband = len(mbobs)
+    scale = detobs.jacobian.scale
+
+    runner = _get_admom_runner(rng)
+    fwhms = []
+    for b in range(nband):
+        res = runner.go(mbobs[b][0].psf)
+        fwhms.append(T_to_fwhm(res['T']))
+
+    target = max(fwhms)
+    smooth_px = [
+        (
+            fwhm_to_sigma(np.sqrt(target ** 2 - fwhms[b] ** 2)) / scale
+            if fwhms[b] < target - 1.0e-9 else 0.0
+        )
+        for b in range(nband)
+    ]
+
+    def homogenize(im, b):
+        if smooth_px[b] > 0:
+            return gaussian_filter(
+                im, smooth_px[b], mode='reflect',
+            )
+        return im
+
+    inseg = seg > 0
+    planes, nplanes = [], []
+    for b in range(nband):
+        mim = homogenize(mbobs[b][0].image, b)
+        mns = homogenize(mbobs[b][0].noise, b)
+        planes.append(_starlet_plane(mim * inseg, S2_JSCALE))
+        nplanes.append(_starlet_plane(mns, S2_JSCALE))
+
+    wts = [1.0 / _mad_sigma(n) ** 2 for n in nplanes]
+    det_im = sum(w * p for w, p in zip(wts, planes))
+
+    # per-field effective threshold: sep's per-pixel threshold is
+    # 0.8 x noise, so the quantile over pure-noise realizations
+    # at 1 - p0, divided by 0.8, holds the channel to the
+    # sep-matched per-pixel false rate despite the correlated
+    # non-gaussian wavelet coefficients.  The realizations are
+    # phase-randomized copies of each band's attached noise
+    # field, preserving its correlation: metacal'd noise is
+    # strongly correlated, and white realizations under-predict
+    # the coefficient tail there (measured 8% false extras on
+    # metacal images vs ~0 on the white-noise fields)
+    vals = []
+    for _ in range(S2_NREAL):
+        nims = [
+            homogenize(
+                _phase_randomized(mbobs[b][0].noise, rng), b,
+            )
+            for b in range(nband)
+        ]
+        npl = [_starlet_plane(n, S2_JSCALE) for n in nims]
+        nw = [1.0 / _mad_sigma(n) ** 2 for n in npl]
+        vals.append(
+            sum(w * p for w, p in zip(nw, npl)).ravel()
+        )
+    v = np.concatenate(vals)
+    noise_eff = np.quantile(v, 1 - p0) / 0.8
+
+    sx_config = dict(detect.get_sx_config())
+    sx_config['filter_kernel'] = None
+    sx_config['filter_type'] = 'matched'
+    cat, _ = sxdes.run_sep(
+        image=det_im.astype('f4').copy(),
+        noise=noise_eff, config=sx_config,
+    )
+
+    ax = sxcat['x']
+    ay = sxcat['y']
+    if prior_extras is not None and len(prior_extras):
+        ax = np.concatenate([ax, prior_extras[:, 0]])
+        ay = np.concatenate([ay, prior_extras[:, 1]])
+    extras = []
+    for xi, yi in zip(cat['x'], cat['y']):
+        if np.min(
+            (ax - xi) ** 2 + (ay - yi) ** 2
+        ) < S2_EXTRA_MIN_SEP ** 2:
+            continue
+        if extras and np.min([
+            (xa - xi) ** 2 + (ya - yi) ** 2
+            for xa, ya in extras
+        ]) < S2_EXTRA_DUP ** 2:
+            continue
+        extras.append((xi, yi))
+    return np.array(extras).reshape(-1, 2)
+
+
+def _starlet_plane(image, jplane):
+    """
+    One plane of the generation-1 a-trous B3 starlet transform:
+    w_j = c_j - c_{j+1} with the dilated [1,4,6,4,1]/16 kernel
+    and reflecting boundaries, returned for plane index jplane
+    (0-offset, so jplane=1 is 'scale 2')
+    """
+    import numpy as np
+    from scipy.ndimage import convolve1d
+
+    b3 = np.array([1.0, 4.0, 6.0, 4.0, 1.0]) / 16.0
+    c = image.astype('f8')
+    for j in range(jplane + 1):
+        step = 2 ** j
+        k = np.zeros(4 * step + 1)
+        k[::step] = b3
+        s = convolve1d(c, k, axis=0, mode='reflect')
+        s = convolve1d(s, k, axis=1, mode='reflect')
+        if j == jplane:
+            return c - s
+        c = s
+
+
+def _mad_sigma(x):
+    import numpy as np
+
+    return 1.4826 * np.median(np.abs(x - np.median(x)))
+
+
+def _phase_randomized(noise, rng):
+    """
+    A new realization of a stationary noise field: keep the
+    amplitude spectrum, randomize the phases.  Preserves the
+    field's correlation function exactly in expectation, which
+    white draws do not for metacal'd (correlated) noise.
+    """
+    import numpy as np
+
+    n0 = noise - noise.mean()
+    f = np.fft.rfft2(n0)
+    phases = np.exp(
+        2j * np.pi * rng.uniform(size=f.shape)
+    )
+    return np.fft.irfft2(np.abs(f) * phases, s=n0.shape)
 
 
 def get_dir(tract):
