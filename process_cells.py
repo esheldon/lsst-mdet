@@ -1,13 +1,14 @@
 """
 TODO
 
-- mfrac
+- mfrac for deblended objects
 - star mask
 - add deblending with special flags, gauss_, fam_
 - decide MIN_GOOD_FRAC
 - decide if keeping non primary
 - detection kernel (fixed or variable)
 - Tfrac (requires upstream)
+- keep track of fitted x/y?
 
 """
 import os
@@ -30,9 +31,11 @@ DM_OUT = DM_NO_DATA | DM_DETECTION_EDGE
 
 # processing flags
 from ngmix.flags import NO_ATTEMPT  # noqa
-PSF_FAILURE = 2**21
-BAD_BBOX = 2**24
-ZERO_WEIGHTS = 2**25
+PSF_FAILURE = 2 ** 21
+BAD_BBOX = 2 ** 22
+ZERO_WEIGHTS = 2 ** 23
+# FLAG_DEBLEND_FAILED = 2 ** 24
+FLAG_NOT_CONVERGED = 2 ** 25
 
 MIN_GOOD_FRAC = 0.2
 
@@ -45,6 +48,21 @@ AP_RAD = 1.5
 
 MFRAC_FWHM = 1.2
 
+GROUP_BOX_PAD = 10
+
+# with maxiter_type 'scaled', the sweep cap applies as configured
+# up to this group size and is scaled up linearly with the member
+# count beyond it: sweeps to converge grow with group size
+# (Gauss-Seidel information propagates about one object per
+# sweep; measured on 2000 wldb fields the converged-group median
+# numiter goes 11 -> 133 and the p99 102 -> 591 from single
+# objects to 17-64 members, and an extras-enabled 31-member
+# cluster core needs 1034).  'fixed' is right for wide fields,
+# where the long-running groups are almost all non-converging
+# limit cycles and the scaled caps only multiply their cost
+
+MAXITER_SIZE_REF = 8.0
+
 
 def get_args():
     import argparse
@@ -54,6 +72,7 @@ def get_args():
     parser.add_argument('--seed', type=int, required=True)
     parser.add_argument('--outfile', required=True)
     parser.add_argument('--progress', action='store_true')
+    parser.add_argument('--show', action='store_true')
     parser.add_argument('--redo-bg', action='store_true')
     parser.add_argument('--mdet', action='store_true')
     return parser.parse_args()
@@ -384,12 +403,13 @@ def do_single_fits(mbobs, weights, sxcat, rng):
                     icat=sxcat[i],
                 )
                 # # flags are explicitly set
-                fit_struct = fit_gauss(
+                fit_gauss(
+                    st=cat[i],
                     rng=rng,
                     mbobs=stamp_mbobs,
                 )
 
-                cat[i] = fit_struct
+                # cat[i] = fit_struct
 
                 cat['mfrac'][i] = calculate_mfrac(
                     mbobs=stamp_mbobs,
@@ -406,9 +426,9 @@ def do_single_fits(mbobs, weights, sxcat, rng):
     else:
         cat['flags'] = PSF_FAILURE
 
-    # set after loop because above we explictly overwrite each cat[i]
+    cat['xcell'] = sxcat['x']
+    cat['ycell'] = sxcat['y']
     _set_mcal_psfs(st=cat, psf_res=psf_res)
-
     return cat
 
 
@@ -467,10 +487,13 @@ def fit_gauss(rng, mbobs):
     st = get_struct(bands=bands)
 
     st['flags'] = res['flags']
+    st['numiter'] = res['nfev']
+    st['group_size'] = 1
+
     # for these single-object fitters the shape is usable iff the
     # fit succeeded, and no deblending is involved
-    st['g_flags'] = res['flags']
     st['deblend_flags'] = 0
+    st['group_size'] = 1
 
     if res['flags'] == 0:
         st['g1'] = res['g'][0]
@@ -494,7 +517,77 @@ def fit_gauss(rng, mbobs):
 
         st['s2n'] = res['s2n']
 
-    return st
+    # return st
+
+
+def pack_deblend_object(st, obj_res, bands, jacobian):
+    """
+    flags, deblend_flags, numiter set outside
+    """
+
+    g1, g2, g1_err, g2_err = _e2g(
+        e1=obj_res['e1'],
+        e2=obj_res['e2'],
+        e1_err=obj_res['e1_err'],
+        e2_err=obj_res['e2_err'],
+    )
+
+    st['g1'] = g1
+    st['g1_err'] = g1_err
+    st['g2'] = g2
+    st['g2_err'] = g2_err
+    st['T'] = obj_res['T']
+    st['T_err'] = obj_res['T_err']
+
+    _set_fluxes(
+        st=st,
+        bands=bands,
+        flux=obj_res['flux'],
+        flux_err=obj_res['flux_err'],
+    )
+    _set_colors(
+        st=st,
+        bands=bands,
+        flux=obj_res['flux'],
+        fcov=obj_res['flux_cov'],
+    )
+
+    st['s2n'] = obj_res['s2n']
+
+
+def _e2g(e1, e2, e1_err, e2_err):
+    """
+    convert distortion-convention shapes to reduced shear,
+    g = e / (1 + sqrt(1 - e^2)), with diagonal error propagation.
+    The deblender guarantees e^2 < 1 for usable shapes (the det
+    condition); the clip only guards float rounding at the boundary
+    """
+    import numpy as np
+
+    if np.isfinite(e1) and np.isfinite(e2):
+        u = e1 * e1 + e2 * e2
+        s = np.sqrt(max(1.0 - u, 0.0))
+        f = 1.0 / (1.0 + s)
+        g1 = e1 * f
+        g2 = e2 * f
+
+        # dg_i/de_j = f delta_ij + 2 e_i e_j f'; f' = df/d(e^2)
+        if s > 0:
+            fp = 1.0 / (2 * s * (1.0 + s) ** 2)
+        else:
+            fp = 0.0
+        g1_err = np.sqrt(
+            (f + 2 * e1 * e1 * fp) ** 2 * e1_err ** 2
+            + (2 * e1 * e2 * fp) ** 2 * e2_err ** 2
+        )
+        g2_err = np.sqrt(
+            (2 * e1 * e2 * fp) ** 2 * e1_err ** 2
+            + (f + 2 * e2 * e2 * fp) ** 2 * e2_err ** 2
+        )
+    else:
+        g1, g2, g1_err, g2_err = [np.nan] * 4
+
+    return g1, g2, g1_err, g2_err
 
 
 def _set_fluxes(st, bands, flux, flux_err):
@@ -617,8 +710,12 @@ def _get_gauss_runner(rng, scale, bands):
 
 
 def fit_deblend(
-    fit_config, mbobs, detobs, sxcat, seg, rng, bands, show=False,
-    extra_detections=None, extra_fixcen=None, gpu_ctx=None,
+    mbobs,
+    weights,
+    sxcat,
+    seg,
+    rng,
+    show=False,
 ):
     """
     Deblend and measure all detected objects
@@ -630,21 +727,12 @@ def fit_deblend(
         weight, psf and the noise field attached by do_metacal,
         from which the per-mode noise power for the flux errors is
         measured.  A single Observation is also accepted
-    detobs: ngmix.Observation
-        The detection observation, coadded over the bands, on the
-        same pixel grid as the band images.  Its jacobian defines
-        the sky frame for the sxcat positions, its psf fills the
-        psf fields of the output, and the concentration
-        classification is measured on its image
     sxcat: array with fields
         The sep catalog from detect.run_sep on detobs
     seg: array
         The sep segmentation map, used for the fofx grouping
     rng: np.random.RandomState
         The random number generator
-    bands: sequence of str
-        The band names for the flux_{band} columns, one per band of
-        mbobs
     show: bool, optional
         If set to True, show a kdeblend view_blend figure for each
         blend group after its fit: the region of the field bounding
@@ -688,84 +776,63 @@ def fit_deblend(
         sxcat.size: the extra-detection rows are not covered
     """
     import numpy as np
-    from ngmix.moments import fwhm_to_T
-    from ngmix.observation import get_mb_obs
+    # from ngmix.moments import fwhm_to_T
     from ngmix.prepsfadmom.prep import choose_fwhm_smooth
-    from kdeblend import EXTERNALS_SUBTRACTED
-    from .fitting import get_kdeblend_struct, _get_admom_runner
 
     model = 'exp'
+    tol = 1.0e-5
+    maxiter = 500
+    maxiter_type = "fixed"
+    recenter = True
+    full_errors = True
 
-    mbobs = get_mb_obs(mbobs)
-    if len(bands) != len(mbobs):
-        raise ValueError(
-            f'got {len(bands)} band names for {len(mbobs)} bands'
-        )
+    ap_rad = 1.5  # pixels
+    cen_sigma0 = 0.1
+    e_sigma0 = 0.0
+    tguess_range = (0.05, 5.0)
+
+    bands = [obslist[0].meta['band'] for obslist in mbobs]
+
     for obslist in mbobs:
         if not obslist[0].has_noise():
             raise ValueError(
                 'each band observation must have a noise field for '
                 'the per-mode noise power'
             )
-    tol = fit_config['tol']
-    maxiter = fit_config['maxiter']
-    maxiter_type = fit_config['maxiter_type']
-    if maxiter_type not in ('fixed', 'scaled'):
-        raise ValueError(f"bad maxiter_type '{maxiter_type}'")
-    deblend_mode = fit_config['deblend_mode']
-    recenter = fit_config['recenter']
-    full_errors = fit_config['full_errors']
-    # stamp apodization radius in pixels; nonzero requires
-    # full_errors false (the influence transfer assumes no
-    # apodization; the kdeblend deblender enforces it)
-    ap_rad = fit_config['ap_rad']
-    cen_sigma0 = fit_config['cen_sigma0'] if recenter else 0.0
-    e_sigma0 = fit_config['e_sigma0']
-    if deblend_mode not in ('stamps', 'group', 'group-replace'):
-        raise ValueError(f"bad deblend_mode '{deblend_mode}'")
-    if extra_detections is not None and deblend_mode == 'stamps':
-        raise ValueError(
-            'extra_detections requires a group deblend_mode; '
-            'extra detections have no sep bbox for the stamp '
-            'cutting'
-        )
 
-    scale = detobs.jacobian.scale
-    jrow, jcol = detobs.jacobian.get_cen()
+    jacobian = mbobs[0][0].jacobian
+    scale = jacobian.scale
+    v, u = jacobian.get_vu(row=sxcat['y'], col=sxcat['x'])
+
+    Tguess = np.clip(
+        (sxcat['x2'] + sxcat['y2']) * scale ** 2,
+        tguess_range[0], tguess_range[1],
+    )
+
+    objects = [
+        {
+            'v': v[i],
+            'u': u[i],
+            'type': model,
+            'Tguess': Tguess[i],
+        }
+        for i in range(sxcat.size)
+    ]
 
     # one psf fit on the detection coadd fills the psf fields for
     # all objects; the smoothing scale covers the largest band psf
-    psf_runner = _get_admom_runner(rng)
-    psf_res = psf_runner.go(detobs.psf)
+    # psf_runner = _get_admom_runner(rng)
+    # psf_res = psf_runner.go(detobs.psf)
+    psf_res = fit_and_set_mcal_psfs(
+        mbobs=mbobs,
+        weights=weights,
+        rng=rng,
+    )
 
     fwhm_smooth = choose_fwhm_smooth(mbobs, rng=rng)
-    Tsmooth = fwhm_to_T(fwhm_smooth)
+    # Tsmooth = fwhm_to_T(fwhm_smooth)
 
-    v, u, Tguess, types, s2n_det, objects = build_deblend_objects(
-        sxcat=sxcat, detobs=detobs, jrow=jrow, jcol=jcol,
-        scale=scale, model=model, bdf_entries=bdf_entries,
-        classify_dev=fit_config['classify_dev'],
-    )
-
-    Tbar = _get_size_scales(sxcat=sxcat, scale=scale)
-
-    sdims = None
-    if deblend_mode == 'stamps':
-        sdims = _get_stamp_sizes(
-            sxcat=sxcat, fwhm_smooth=fwhm_smooth, scale=scale,
-            square=fit_config['square_stamps'],
-        )
-    groups = _get_groups(
-        sxcat=sxcat, seg=seg, Tbar=Tbar, Tsmooth=Tsmooth,
-        scale=scale,
-    )
-    single_group = fit_config.get('single_group', False)
-    if single_group:
-        # assignment-free baseline: every object in one group on
-        # the full image -- no membership, no group box, no
-        # replace boundary (the remaining discreteness is
-        # detection + the joint fit itself)
-        groups = [list(range(sxcat.size))]
+    groups = get_groups(sxcat=sxcat, seg=seg)
 
     # add the extra detections: each joins the group of the seg
     # island it lands on, with the configured model and a size
@@ -774,103 +841,51 @@ def fit_deblend(
     # seg background are not fit and their rows flagged
     nsx = sxcat.size
     n_extra = 0
-    off_seg = []
-    if extra_detections is not None:
-        extra_detections = np.atleast_2d(extra_detections)
-        n_extra = len(extra_detections)
-        groups = [list(g) for g in groups]
-        num_to_group = {}
-        for gid, group in enumerate(groups):
-            for i in group:
-                num_to_group[int(sxcat['number'][i])] = gid
-        Tguess_inj = float(
-            np.clip(Tsmooth, TGUESS_RANGE[0], TGUESS_RANGE[1])
-        )
-        dim_r, dim_c = seg.shape
-        for k, (x, y) in enumerate(extra_detections):
-            objects.append(dict(
-                v=(y - jrow) * scale,
-                u=(x - jcol) * scale,
-                type=model,
-                Tguess=Tguess_inj,
-                fixcen=bool(
-                    extra_fixcen is not None and extra_fixcen[k]
-                ),
-                **bdf_entries,
-            ))
-            ir = int(round(y))
-            ic = int(round(x))
-            label = (
-                int(seg[ir, ic])
-                if 0 <= ir < dim_r and 0 <= ic < dim_c else 0
-            )
-            if label in num_to_group:
-                groups[num_to_group[label]].append(nsx + k)
-            else:
-                off_seg.append(nsx + k)
+    # off_seg = []
+    # if extra_detections is not None:
+    #     extra_detections = np.atleast_2d(extra_detections)
+    #     n_extra = len(extra_detections)
+    #     groups = [list(g) for g in groups]
+    #     num_to_group = {}
+    #     for gid, group in enumerate(groups):
+    #         for i in group:
+    #             num_to_group[int(sxcat['number'][i])] = gid
+    #     Tguess_inj = float(
+    #         np.clip(Tsmooth, TGUESS_RANGE[0], TGUESS_RANGE[1])
+    #     )
+    #     dim_r, dim_c = seg.shape
+    #     for k, (x, y) in enumerate(extra_detections):
+    #         objects.append(dict(
+    #             v=(y - jrow) * scale,
+    #             u=(x - jcol) * scale,
+    #             type=model,
+    #             Tguess=Tguess_inj,
+    #             fixcen=bool(
+    #                 extra_fixcen is not None and extra_fixcen[k]
+    #             ),
+    #             **bdf_entries,
+    #         ))
+    #         ir = int(round(y))
+    #         ic = int(round(x))
+    #         label = (
+    #             int(seg[ir, ic])
+    #             if 0 <= ir < dim_r and 0 <= ic < dim_c else 0
+    #         )
+    #         if label in num_to_group:
+    #             groups[num_to_group[label]].append(nsx + k)
+    #         else:
+    #             off_seg.append(nsx + k)
 
-    cat = get_kdeblend_struct(
-        bands=bands, model=model, n=nsx + n_extra,
-        flux_cov=full_errors,
-    )
-    cat['color_det'][nsx:] = 1
+    cat = get_struct(bands=bands, n=nsx + n_extra)
+
+    # cat['color_det'][nsx:] = 1
     # extras have no sep flux_auto and keep the nan init
-    cat['s2n_det'][:nsx] = s2n_det
-    for idx in off_seg:
-        cat['flags'][idx] = FLAG_EXTRA_DET_OFF_SEG
-    cat['psf_flags'] = psf_res['flags']
-    if psf_res['flags'] == 0:
-        cat['psf_T'] = psf_res['T']
-
-    def fit_group(group, fixed_models=None, gid=None):
-        if (fixed_models is None and gpu_results is not None
-                and gid in gpu_results):
-            return gpu_results[gid]
-        return fit_one_group(
-            group, fixed_models=fixed_models,
-            mbobs=mbobs, sxcat=sxcat, nsx=nsx, seg=seg,
-            objects=objects, deblend_mode=deblend_mode,
-            single_group=single_group,
-            maxiter=maxiter, maxiter_type=maxiter_type,
-            fwhm_smooth=fwhm_smooth, ap_rad=ap_rad, tol=tol,
-            rng=rng, recenter=recenter, cen_sigma0=cen_sigma0,
-            e_sigma0=e_sigma0, full_errors=full_errors,
-            scale=scale, sdims=sdims,
-        )
-
-    # gpu path: batch the pass-1 fit loops of every eligible
-    # group into one feeder submission (kdeblend.gpu); groups
-    # outside the kernel scope (or whose construction fails)
-    # fall back to the CPU fit_group above.  Pass 2 (absent in
-    # group-replace mode) stays on the CPU.
-    gpu_results = None
-    if gpu_ctx is not None:
-        if deblend_mode not in ('group', 'group-replace'):
-            raise NotImplementedError(
-                'the gpu deblend path implements the group '
-                'modes only'
-            )
-        if full_errors:
-            raise NotImplementedError(
-                'the gpu deblend path does not support '
-                'full_errors'
-            )
-        if model not in ('exp', 'gauss'):
-            raise NotImplementedError(
-                f'the gpu deblend path supports exp/gauss '
-                f'models, not {model!r}'
-            )
-        gpu_results = _gpu_fit_pass1(
-            gpu_ctx, groups,
-            mbobs=mbobs, sxcat=sxcat, nsx=nsx, seg=seg,
-            objects=objects, deblend_mode=deblend_mode,
-            single_group=single_group,
-            maxiter=maxiter, maxiter_type=maxiter_type,
-            fwhm_smooth=fwhm_smooth, ap_rad=ap_rad, tol=tol,
-            rng=rng, recenter=recenter, cen_sigma0=cen_sigma0,
-            e_sigma0=e_sigma0,
-            full_errors=full_errors, scale=scale, sdims=sdims,
-        )
+    # cat['s2n_det'][:nsx] = s2n_det
+    # for idx in off_seg:
+    #     cat['flags'][idx] = FLAG_EXTRA_DET_OFF_SEG
+    # cat['psf_flags'] = psf_res['flags']
+    # if psf_res['flags'] == 0:
+    #     cat['psf_T'] = psf_res['T']
 
     # the final per-group fit for the visualization: pass-2 refits
     # overwrite the pass-1 entries, so each group is shown once with
@@ -879,103 +894,70 @@ def fit_deblend(
 
     # pass 1: fit each group with no knowledge of the rest of the
     # field
-    results1 = {}
+    # results = {}
     for gid, group in enumerate(groups):
-        try:
-            res, boxes, gcut = fit_group(group, gid=gid)
-        except Exception as err:
-            print(f'deblend failed for group {group}: {err}')
-            for i in group:
-                cat['flags'][i] = FLAG_DEBLEND_FAILED
-            continue
-        for i, robj in zip(group, res['objects']):
-            _pack_object(
-                cat=cat, i=i, robj=robj, bands=bands,
-                jrow=jrow, jcol=jcol, scale=scale,
+
+        # try:
+        res, gextra = fit_one_group(
+            group,
+            mbobs=mbobs,
+            sxcat=sxcat,
+            nsx=nsx,
+            seg=seg,
+            objects=objects,
+            maxiter=maxiter,
+            maxiter_type=maxiter_type,
+            fwhm_smooth=fwhm_smooth,
+            ap_rad=ap_rad,
+            tol=tol,
+            rng=rng,
+            recenter=recenter,
+            cen_sigma0=cen_sigma0,
+            e_sigma0=e_sigma0,
+            full_errors=full_errors,
+            scale=scale,
+        )
+
+        # except Exception as err:
+        #     print(f'deblend failed for group {group}: {err}')
+        #     for i in group:
+        #         cat['flags'][i] = FLAG_DEBLEND_FAILED
+        #     continue
+
+        for i, obj_res in zip(group, res['objects']):
+            pack_deblend_object(
+                st=cat[i],
+                obj_res=obj_res,
+                bands=bands,
+                jacobian=jacobian,
             )
-            results1[i] = robj
+            # results[i] = obj_res
+
         cat['numiter'][group] = res['numiter']
         cat['group_size'][group] = len(group)
+
         if not res['converged']:
             for i in group:
                 cat['flags'][i] |= FLAG_NOT_CONVERGED
+
         if show:
-            group_shows[gid] = (res['objects'], boxes, '', gcut)
-
-    # pass 2: directed external subtraction.  Groups with inbound
-    # relevance links are refit with the linked external objects'
-    # pass-1 models subtracted as fixed sources; the asymmetry of
-    # contamination means the bright externals are accurately
-    # measured in pass 1.  A pass-2 failure keeps the pass-1
-    # measurements.  In group-replace mode the external light was
-    # replaced with noise in the cut, so there is nothing to
-    # subtract (doing so would remove light no longer in the
-    # data): no external candidates, and the loop below no-ops
-    ext_of = {}
-    if deblend_mode != 'group-replace':
-        ii, jj = _get_relevance_links(
-            sxcat=sxcat, Tbar=Tbar, Tsmooth=Tsmooth, scale=scale,
-            eps=EXTERNAL_EPS,
-        )
-        F = sxcat['flux']
-        for a, b in zip(ii, jj):
-            if F[b] > EXTERNAL_FLUX_RATIO * F[a]:
-                ext_of.setdefault(a, set()).add(b)
-
-    for gid, group in enumerate(groups):
-        # refit only groups where pass 1 struggled: a member was
-        # demoted or restarted, or the whole group failed.  Healthy
-        # groups are already accurate and would only pick up the
-        # externals' model noise
-        struggled = any(
-            (i not in results1)
-            or (results1[i]['deblend_flags'] != 0)
-            for i in group
-        )
-        if not struggled:
-            continue
-
-        gset = set(group)
-        ext = set()
-        for i in group:
-            ext |= ext_of.get(i, set()) - gset
-        fixed = _build_fixed_models(
-            ext_indices=ext, results1=results1, v=v, u=u,
-        )
-        if not fixed:
-            continue
-        try:
-            res, boxes, gcut = fit_group(group, fixed_models=fixed)
-        except Exception as err:
-            print(
-                f'pass-2 deblend failed for group {group}: {err}; '
-                'keeping pass-1 measurements'
-            )
-            continue
-        for i, robj in zip(group, res['objects']):
-            _pack_object(
-                cat=cat, i=i, robj=robj, bands=bands,
-                jrow=jrow, jcol=jcol, scale=scale,
-            )
-            cat['deblend_flags'][i] |= EXTERNALS_SUBTRACTED
-        cat['numiter'][group] = res['numiter']
-        cat['group_size'][group] = len(group)
-        if not res['converged']:
-            for i in group:
-                cat['flags'][i] |= FLAG_NOT_CONVERGED
-        if show:
-            group_shows[gid] = (
-                res['objects'], boxes, ' externals subtracted', gcut,
+            show_group(
+                mbobs=gextra['gmbobs'],
+                seg=gextra['gseg'],
+                objects=res['objects'],
+                group=groups[gid],
+                title=f'blend group {gid}',
             )
 
     if show:
         for gid in sorted(group_shows):
-            robjs, boxes, note, gcut = group_shows[gid]
-            _show_group(
-                mbobs=mbobs, seg=seg, objects=robjs,
-                group=groups[gid], boxes=boxes,
-                title=f'blend group {gid}{note}',
-                group_cut=gcut,
+            robjs = group_shows[gid]
+            show_group(
+                mbobs=mbobs,
+                seg=seg,
+                objects=robjs,
+                group=groups[gid],
+                title=f'blend group {gid}',
             )
 
     # flag extra rows whose fitted centers converged onto a sep
@@ -985,20 +967,254 @@ def fit_deblend(
     # must not enter downstream selections (a fraction would pass
     # the standard cuts).  Convergence is only meaningful when the
     # centers are refit, so this requires recenter
-    if n_extra and recenter:
-        xf, yf = cat['x_fit'], cat['y_fit']
-        for k in range(n_extra):
-            i = nsx + k
-            if cat['flags'][i] != 0:
-                continue
-            d2 = np.nanmin(
-                (xf[:nsx] - xf[i]) ** 2 + (yf[:nsx] - yf[i]) ** 2
-            )
-            if d2 < R_DUP_FIT ** 2:
-                cat['flags'][i] |= FLAG_DUPLICATE_EXTRA
+    # if n_extra and recenter:
+    #     xf, yf = cat['x_fit'], cat['y_fit']
+    #     for k in range(n_extra):
+    #         i = nsx + k
+    #         if cat['flags'][i] != 0:
+    #             continue
+    #         d2 = np.nanmin(
+    #             (xf[:nsx] - xf[i]) ** 2 + (yf[:nsx] - yf[i]) ** 2
+    #         )
+    #         if d2 < R_DUP_FIT ** 2:
+    #             cat['flags'][i] |= FLAG_DUPLICATE_EXTRA
 
-    keep = np.ones(sxcat.size, dtype=bool)
-    return cat, keep
+    cat['xcell'] = sxcat['x']
+    cat['ycell'] = sxcat['y']
+    _set_mcal_psfs(st=cat, psf_res=psf_res)
+    return cat
+
+
+def fit_one_group(
+    group,
+    mbobs,
+    sxcat,
+    nsx,
+    seg,
+    objects,
+    deblend_mode,
+    maxiter,
+    maxiter_type,
+    fwhm_smooth,
+    ap_rad,
+    tol,
+    rng,
+    recenter,
+    cen_sigma0,
+    e_sigma0,
+    full_errors,
+    show,
+):
+    """
+    cut and fit one deblend group with the configured parameters.
+    Extracted from the former fit_deblend closure so external
+    harnesses (e.g. the port differential rig) can drive the exact
+    production per-group path.
+
+    Returns
+    -------
+    res, boxes, gcut
+        the kdeblend result, the per-member boxes, and the group
+        cut (gmbobs, box) for group modes (None for stamps mode)
+    """
+    from kdeblend import deblend
+
+    if maxiter_type == 'scaled':
+        # large groups converge in proportionally more
+        # sweeps; see MAXITER_SIZE_REF
+        group_maxiter = int(round(
+            maxiter * max(1.0, len(group) / MAXITER_SIZE_REF)
+        ))
+    else:
+        group_maxiter = maxiter
+
+    scale = mbobs[0][0].jacobian.scale
+
+    # the cutout box and the member seg labels come from
+    # the sep members only; extra-detection members carry
+    # no sep bbox but land inside the island by
+    # construction
+    gmbobs, gseg, box = cut_group_mbobs(
+        mbobs=mbobs,
+        sxcat=sxcat,
+        group=[i for i in group if i < nsx],
+        seg=seg,
+    )
+
+    gobjects = [objects[i] for i in group]
+    res = deblend(
+        gmbobs,
+        gobjects,
+        fwhm_smooth=fwhm_smooth,
+        ap_rad=ap_rad,
+        use_noise_image=True,
+        tol=tol,
+        maxiter=group_maxiter,
+        rng=rng,
+        recenter=recenter,
+        cen_sigma0=cen_sigma0,
+        e_sigma0=e_sigma0,
+        full_errors=full_errors,
+        anchor_sigma=(
+            anchor_covs(sxcat, group, nsx, scale)
+            if full_errors and recenter else 0.0
+        ),
+    )
+
+    gextra = {
+        'gmbobs': gmbobs,
+        'gseg': gseg,
+        'gobjects': gobjects,
+        'gbox': box,
+    }
+    return res, gextra
+
+
+def show_group(
+    mbobs,
+    seg,
+    objects,
+    group,
+    title,
+    pad=10,
+):
+    """
+    show the kdeblend view_blend figure for one blend group: the
+    region of the field bounding the group's stamps, with the
+    fitted models rendered, the seg map as the fourth panel and the
+    stamp boxes drawn on every panel, members labeled by catalog
+    index.  At most the first three bands are shown.
+
+    was actually fit; the box interior of every shown band is
+    overwritten with those pixels so the display shows what the
+    fitter saw -- in group-replace mode the external objects'
+    pixels are noise there, not the original data
+    """
+    from kdeblend import vis
+
+    vis.view_blend(
+        mbobs,
+        objects,
+        bands=list(range(min(len(mbobs), 3))),
+        seg=seg,
+        labels=[str(i) for i in group],
+        title=title,
+        show=True,
+    )
+
+
+def anchor_covs(sxcat, group, nsx, scale):
+    """
+    per-member anchor position covariances in arcsec^2 with
+    (v, u) ordering, from the sep centroid error moments
+    (erry2/errxy/errx2 in pixels^2).  The anchor noise of the
+    detection positions is a real error channel for recentered
+    tight blends (it can double the flux variance at the
+    detection-centroid scale).  Extra-detection members have no
+    sep moments and get zero (their errors stay conditional on
+    the injected positions).  Non-finite or non-positive-definite
+    sep moments are sanitized: bad variances zeroed, the cross
+    term clamped inside the PSD bound
+    """
+    import numpy as np
+
+    out = np.zeros((len(group), 2, 2))
+    for k, i in enumerate(group):
+        if i >= nsx:
+            continue
+        vv = float(sxcat['erry2'][i])
+        uu = float(sxcat['errx2'][i])
+        vu = float(sxcat['errxy'][i])
+        if not np.isfinite(vv) or vv < 0:
+            vv = 0.0
+        if not np.isfinite(uu) or uu < 0:
+            uu = 0.0
+        lim = 0.99 * np.sqrt(vv * uu)
+        if not np.isfinite(vu):
+            vu = 0.0
+        vu = np.clip(vu, -lim, lim)
+        out[k] = scale ** 2 * np.array([
+            [vv, vu], [vu, uu],
+        ])
+    return out
+
+
+def cut_group_mbobs(mbobs, sxcat, group, seg):
+    """
+    cut the shared deblending image for a group from every band:
+    the box bounding the union of the members' seg-footprint
+    bounding boxes, padded by GROUP_BOX_PAD pixels all around and
+    clipped at the field edges.  The cut keeps the sky frame of
+    the field (the jacobian centers are shifted by the cut
+    origin), so the object v/u offsets are unchanged.  The noise
+    fields are cut along with the images.
+
+    the pixels of objects outside the group are
+    replaced with values from the 180-degree-rotated noise field
+    at the same box location: the rotation preserves a stationary
+    covariance exactly (C(-d) = C(d), including the metacal
+    anisotropy) and is independent of both the image noise and
+    the attached noise field away from the field center.  The
+    attached noise fields are not modified.
+
+    Returns
+    -------
+    mbobs, box
+        box is (row_start, col_start, nrow, ncol) of the cut in
+        the field image
+    """
+    import numpy as np
+    import ngmix
+
+    obs0 = mbobs[0][0]
+    dim_r, dim_c = obs0.image.shape
+
+    r0 = max(int(sxcat['ymin'][group].min()) - GROUP_BOX_PAD, 0)
+    r1 = min(
+        int(sxcat['ymax'][group].max()) + GROUP_BOX_PAD + 1,
+        dim_r,
+    )
+    c0 = max(int(sxcat['xmin'][group].min()) - GROUP_BOX_PAD, 0)
+    c1 = min(
+        int(sxcat['xmax'][group].max()) + GROUP_BOX_PAD + 1,
+        dim_c,
+    )
+
+    nrow = r1 - r0
+    ncol = c1 - c0
+    sl = np.s_[r0:r1, c0:c1]
+
+    segcut = seg[sl]
+    foreign = (segcut != 0) & ~np.isin(
+        segcut, sxcat['number'][group],
+    )
+    if not foreign.any():
+        foreign = None
+
+    out = ngmix.MultiBandObsList()
+    for obslist in mbobs:
+        obs = obslist[0]
+        jrow, jcol = obs.jacobian.get_cen()
+        jacobian = obs.jacobian.copy()
+        jacobian.set_cen(row=jrow - r0, col=jcol - c0)
+
+        image = obs.image[sl].copy()
+        if foreign is not None:
+            image[foreign] = np.rot90(obs.noise, 2)[sl][foreign]
+
+        gobs = ngmix.Observation(
+            image=image,
+            weight=obs.weight[sl].copy(),
+            jacobian=jacobian,
+            noise=obs.noise[sl].copy(),
+            psf=obs.psf,
+            # psf=_cut_psf_obs(psf_obs=obs.psf, nrow=nrow, ncol=ncol),
+        )
+        ol = ngmix.ObsList()
+        ol.append(gobs)
+        out.append(ol)
+
+    return out, segcut, (r0, c0, nrow, ncol)
 
 
 def get_groups(sxcat, seg):
@@ -1240,6 +1456,8 @@ def get_struct(bands, n=1):
         ('cell_i', 'i2'),
         ('cell_j', 'i2'),
         ('flags', 'i4'),
+        ('numiter', 'i2'),
+        ('group_size', 'i2'),
         ('is_primary', bool),
         ('deblend_flags', 'i4'),
         ('mfrac', 'f4'),
@@ -1655,14 +1873,14 @@ def _ap_kern_kern(x, m, h):
         return val
 
 
-def do_metacal_and_process(mbobs, rng):
+def do_metacal_and_process(mbobs, rng, show):
     import esutil as eu
 
     odict = do_all_metacal(mbobs=mbobs, rng=rng)
 
     dlist = []
     for key, mcal_mbobs in odict.items():
-        st = process_one_mbobs(mbobs=mcal_mbobs, rng=rng)
+        st = process_one_mbobs(mbobs=mcal_mbobs, rng=rng, show=show)
 
         st['mcal_step'] = 'ns' if key == 'noshear' else key
         dlist.append(st)
@@ -1797,7 +2015,7 @@ def run_metacal(obs, rng, types):
     return odict
 
 
-def process_one_mbobs(mbobs, rng):
+def process_one_mbobs(mbobs, rng, show):
     detect_obs, weights = coadd_mbobs(mbobs)
     sxcat, seg = run_sep(detect_obs)
 
@@ -1810,15 +2028,23 @@ def process_one_mbobs(mbobs, rng):
         sxcat = sxcat[w]
         is_primary = is_primary[w]
 
-    cat = do_single_fits(
-        mbobs=mbobs,
-        weights=weights,
-        sxcat=sxcat,
-        rng=rng,
-    )
+    if True:
+        cat = do_single_fits(
+            mbobs=mbobs,
+            weights=weights,
+            sxcat=sxcat,
+            rng=rng,
+        )
+    else:
+        cat = fit_deblend(
+            mbobs=mbobs,
+            weights=weights,
+            sxcat=sxcat,
+            seg=seg,
+            rng=rng,
+            show=show,
+        )
 
-    cat['xcell'] = sxcat['x']
-    cat['ycell'] = sxcat['y']
     cat['is_primary'] = is_primary
 
     return cat
@@ -1963,7 +2189,7 @@ def redo_background_old(deep_coadd):
     var[:, :] *= noise_factor ** 2
 
 
-def main(tract, patch, seed, with_mdet, redo_bg, outfile, progress):
+def main(tract, patch, seed, with_mdet, redo_bg, outfile, progress, show):
     from tqdm import trange
     import esutil as eu
 
@@ -2034,9 +2260,9 @@ def main(tract, patch, seed, with_mdet, redo_bg, outfile, progress):
             apodize_mbobs(mbobs)
 
             if with_mdet:
-                cat = do_metacal_and_process(mbobs=mbobs, rng=rng)
+                cat = do_metacal_and_process(mbobs=mbobs, rng=rng, show=show)
             else:
-                cat = process_one_mbobs(mbobs=mbobs, rng=rng)
+                cat = process_one_mbobs(mbobs=mbobs, rng=rng, show=show)
                 cat['mcal_step'] = 'na'
 
             fit_and_set_psfrec(st=cat, mbobs=mbobs, rng=rng)
@@ -2077,6 +2303,7 @@ if __name__ == '__main__':
         tract=_args.tract,
         patch=_args.patch,
         progress=_args.progress,
+        show=_args.show,
         redo_bg=_args.redo_bg,
         outfile=_args.outfile,
     )
