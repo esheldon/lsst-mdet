@@ -782,6 +782,7 @@ def fit_deblend(
     import numpy as np
     # from ngmix.moments import fwhm_to_T
     from ngmix.prepsfadmom.prep import choose_fwhm_smooth
+    from ngmix import GMixFatalError
 
     model = 'exp'
     tol = 1.0e-5
@@ -894,54 +895,53 @@ def fit_deblend(
     # the final per-group fit for the visualization: pass-2 refits
     # overwrite the pass-1 entries, so each group is shown once with
     # the measurements that landed in the catalog
-    group_shows = {}
+    # group_shows = {}
 
     # pass 1: fit each group with no knowledge of the rest of the
     # field
     # results = {}
     for gid, group in enumerate(groups):
 
-        # try:
-        res, gextra = fit_one_group(
-            group=group,
-            mbobs=mbobs,
-            sxcat=sxcat,
-            nsx=nsx,
-            seg=seg,
-            objects=objects,
-            maxiter=maxiter,
-            maxiter_type=maxiter_type,
-            fwhm_smooth=fwhm_smooth,
-            ap_rad=ap_rad,
-            tol=tol,
-            rng=rng,
-            recenter=recenter,
-            cen_sigma0=cen_sigma0,
-            e_sigma0=e_sigma0,
-            full_errors=full_errors,
-        )
-
-        # except Exception as err:
-        #     print(f'deblend failed for group {group}: {err}')
-        #     for i in group:
-        #         cat['flags'][i] = FLAG_DEBLEND_FAILED
-        #     continue
-
-        for i, obj_res in zip(group, res['objects']):
-            pack_deblend_object(
-                st=cat[i],
-                obj_res=obj_res,
-                bands=bands,
-                jacobian=jacobian,
-            )
-            # results[i] = obj_res
-
-        cat['numiter'][group] = res['numiter']
         cat['group_size'][group] = len(group)
+        try:
+            res, gextra = fit_one_group(
+                group=group,
+                mbobs=mbobs,
+                sxcat=sxcat,
+                nsx=nsx,
+                seg=seg,
+                objects=objects,
+                maxiter=maxiter,
+                maxiter_type=maxiter_type,
+                fwhm_smooth=fwhm_smooth,
+                ap_rad=ap_rad,
+                tol=tol,
+                rng=rng,
+                recenter=recenter,
+                cen_sigma0=cen_sigma0,
+                e_sigma0=e_sigma0,
+                full_errors=full_errors,
+            )
 
-        if not res['converged']:
+            for i, obj_res in zip(group, res['objects']):
+                pack_deblend_object(
+                    st=cat[i],
+                    obj_res=obj_res,
+                    bands=bands,
+                    jacobian=jacobian,
+                )
+                # results[i] = obj_res
+
+            cat['numiter'][group] = res['numiter']
+
+            if not res['converged']:
+                for i in group:
+                    cat['flags'][i] = FLAG_NOT_CONVERGED
+
+        except GMixFatalError as err:  # noqa
             for i in group:
-                cat['flags'][i] |= FLAG_NOT_CONVERGED
+                cat['flags'][i] = ZERO_WEIGHTS
+            continue
 
         if show:
             show_group(
