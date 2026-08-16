@@ -935,12 +935,12 @@ def fit_deblend(
             cat['numiter'][group] = res['numiter']
 
             if not res['converged']:
-                for i in group:
-                    cat['flags'][i] = FLAG_NOT_CONVERGED
+                cat['flags'][group] = FLAG_NOT_CONVERGED
+            else:
+                cat['flags'][group] = 0
 
         except GMixFatalError as err:  # noqa
-            for i in group:
-                cat['flags'][i] = ZERO_WEIGHTS
+            cat['flags'][group] = ZERO_WEIGHTS
             continue
 
         if show:
