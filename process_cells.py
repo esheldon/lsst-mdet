@@ -452,7 +452,7 @@ def calculate_mfrac(mbobs, mfrac_weight):
     return stats["sums"][5] / stats["wsum"]
 
 
-def fit_gauss(rng, mbobs):
+def fit_gauss(st, rng, mbobs):
     """
     Fit a Gaussian to the observation using maximum likelihood.  The PSF is fit
     first, then the image is fit using a model convolved by the PSF.  Thus the
@@ -484,8 +484,6 @@ def fit_gauss(rng, mbobs):
 
     res = runner.go(mbobs)
 
-    st = get_struct(bands=bands)
-
     st['flags'] = res['flags']
     st['numiter'] = res['nfev']
     st['group_size'] = 1
@@ -512,7 +510,8 @@ def fit_gauss(rng, mbobs):
             st=st,
             bands=bands,
             flux=res['flux'],
-            fcov=res['flux_cov'],
+            flux_err=res['flux_err'],
+            flux_cov=res['flux_cov'],
         )
 
         st['s2n'] = res['s2n']
@@ -545,11 +544,13 @@ def pack_deblend_object(st, obj_res, bands, jacobian):
         flux=obj_res['flux'],
         flux_err=obj_res['flux_err'],
     )
+
     _set_colors(
         st=st,
         bands=bands,
         flux=obj_res['flux'],
-        fcov=obj_res['flux_cov'],
+        flux_err=obj_res['flux_err'],
+        flux_cov=obj_res['flux_cov'],
     )
 
     st['s2n'] = obj_res['s2n']
@@ -608,7 +609,7 @@ def _set_fluxes(st, bands, flux, flux_err):
         st[f'flux_err_{band}'] = flux_err[iband]
 
 
-def _set_colors(st, bands, flux, fcov):
+def _set_colors(st, bands, flux, flux_err, flux_cov):
     """
     Set colors and errors based on the full covariance
     """
@@ -616,6 +617,9 @@ def _set_colors(st, bands, flux, fcov):
     eps = 1.0e-7
 
     nband = len(bands)
+
+    if flux_cov is None:
+        flux_cov = np.diag(flux_err ** 2)
 
     for i in range(nband - 1):
         first_band = bands[i]
@@ -625,10 +629,10 @@ def _set_colors(st, bands, flux, fcov):
         if flux[i] > eps and flux[i + 1] > eps:
             color = -2.5 * np.log10(flux[i] / flux[i + 1])
 
-            color_var = fac**2 * (
-                fcov[i, i] / flux[i] ** 2
-                + fcov[i + 1, i + 1] / flux[i + 1] ** 2
-                - 2 * fcov[i, i + 1] / (flux[i] * flux[i + 1])
+            color_var = fac ** 2 * (
+                flux_cov[i, i] / flux[i] ** 2
+                + flux_cov[i + 1, i + 1] / flux[i + 1] ** 2
+                - 2 * flux_cov[i, i + 1] / (flux[i] * flux[i + 1])
             )
 
             st[cname] = color
@@ -899,7 +903,7 @@ def fit_deblend(
 
         # try:
         res, gextra = fit_one_group(
-            group,
+            group=group,
             mbobs=mbobs,
             sxcat=sxcat,
             nsx=nsx,
@@ -915,7 +919,6 @@ def fit_deblend(
             cen_sigma0=cen_sigma0,
             e_sigma0=e_sigma0,
             full_errors=full_errors,
-            scale=scale,
         )
 
         # except Exception as err:
@@ -949,16 +952,16 @@ def fit_deblend(
                 title=f'blend group {gid}',
             )
 
-    if show:
-        for gid in sorted(group_shows):
-            robjs = group_shows[gid]
-            show_group(
-                mbobs=mbobs,
-                seg=seg,
-                objects=robjs,
-                group=groups[gid],
-                title=f'blend group {gid}',
-            )
+    # if show:
+    #     for gid in sorted(group_shows):
+    #         robjs = group_shows[gid]
+    #         show_group(
+    #             mbobs=mbobs,
+    #             seg=seg,
+    #             objects=robjs,
+    #             group=groups[gid],
+    #             title=f'blend group {gid}',
+    #         )
 
     # flag extra rows whose fitted centers converged onto a sep
     # row's fitted center: nuisance components of the same object.
@@ -992,7 +995,6 @@ def fit_one_group(
     nsx,
     seg,
     objects,
-    deblend_mode,
     maxiter,
     maxiter_type,
     fwhm_smooth,
@@ -1003,7 +1005,6 @@ def fit_one_group(
     cen_sigma0,
     e_sigma0,
     full_errors,
-    show,
 ):
     """
     cut and fit one deblend group with the configured parameters.
@@ -2028,7 +2029,7 @@ def process_one_mbobs(mbobs, rng, show):
         sxcat = sxcat[w]
         is_primary = is_primary[w]
 
-    if True:
+    if False:
         cat = do_single_fits(
             mbobs=mbobs,
             weights=weights,
