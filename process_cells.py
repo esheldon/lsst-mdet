@@ -2,6 +2,7 @@
 TODO
 
 - mfrac for deblended objects
+- record what model was used
 - star mask
 - add deblending with special flags, gauss_, fam_
 - decide MIN_GOOD_FRAC
@@ -22,7 +23,7 @@ import lsst.geom
 from numba import njit
 
 
-TRIM_TO_PRIMARY = True
+# TRIM_TO_PRIMARY = True
 
 # flags set in the input mask plans
 DM_NO_DATA = 1
@@ -72,12 +73,15 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--tract', type=int, required=True)
     parser.add_argument('--patch', type=int, required=True)
+    parser.add_argument('--model', required=True)
     parser.add_argument('--seed', type=int, required=True)
     parser.add_argument('--outfile', required=True)
-    parser.add_argument('--progress', action='store_true')
-    parser.add_argument('--show', action='store_true')
+    parser.add_argument('--deblend', action='store_true')
+    parser.add_argument('--s2-detect', action='store_true')
     parser.add_argument('--redo-bg', action='store_true')
     parser.add_argument('--mdet', action='store_true')
+    parser.add_argument('--progress', action='store_true')
+    parser.add_argument('--show', action='store_true')
     return parser.parse_args()
 
 
@@ -357,7 +361,7 @@ def extract_stamp_obs(obs, icat, stamp_size=49):
     return stamp_obs
 
 
-def do_single_fits(mbobs, weights, sxcat, rng):
+def do_single_fits(mbobs, sxcat, cat, rng):
     """
     Fit each object independently from its own postage stamp
 
@@ -384,55 +388,35 @@ def do_single_fits(mbobs, weights, sxcat, rng):
     import ngmix
     from ngmix import GMixFatalError
 
-    bands = [obslist[0].meta['band'] for obslist in mbobs]
-    cat = get_struct(bands=bands, n=sxcat.size)
-
     mfrac_weight = ngmix.GMixModel(
         [0, 0, 0, 0, ngmix.moments.fwhm_to_T(MFRAC_FWHM), 1],
         'gauss',
     )
 
-    psf_res = fit_and_set_mcal_psfs(
-        mbobs=mbobs, weights=weights, rng=rng,
-    )
+    for i in range(sxcat.size):
 
-    if psf_res['psf_flags'] == 0:
+        try:
+            stamp_mbobs = extract_stamp_mbobs(
+                mbobs=mbobs,
+                icat=sxcat[i],
+            )
+            # # flags are explicitly set
+            fit_gauss(
+                st=cat[i],
+                rng=rng,
+                mbobs=stamp_mbobs,
+            )
 
-        for i in range(sxcat.size):
+            cat['mfrac'][i] = calculate_mfrac(
+                mbobs=stamp_mbobs,
+                mfrac_weight=mfrac_weight,
+            )
 
-            try:
-                stamp_mbobs = extract_stamp_mbobs(
-                    mbobs=mbobs,
-                    icat=sxcat[i],
-                )
-                # # flags are explicitly set
-                fit_gauss(
-                    st=cat[i],
-                    rng=rng,
-                    mbobs=stamp_mbobs,
-                )
-
-                # cat[i] = fit_struct
-
-                cat['mfrac'][i] = calculate_mfrac(
-                    mbobs=stamp_mbobs,
-                    mfrac_weight=mfrac_weight,
-                )
-
-            except IndexError as err:
-                cat['flags'][i] = BAD_BBOX
-                print(f'stamp for obj {i} hit edge: {err}')
-            except GMixFatalError as err:  # noqa
-                cat['flags'][i] = ZERO_WEIGHTS
-                # print(f'obj {i}: {err}')
-
-    else:
-        cat['flags'] = PSF_FAILURE
-
-    cat['xcell'] = sxcat['x']
-    cat['ycell'] = sxcat['y']
-    _set_mcal_psfs(st=cat, psf_res=psf_res)
-    return cat
+        except IndexError as err:
+            cat['flags'][i] = BAD_BBOX
+            print(f'stamp for obj {i} hit edge: {err}')
+        except GMixFatalError as err:  # noqa
+            cat['flags'][i] = ZERO_WEIGHTS
 
 
 def calculate_mfrac(mbobs, mfrac_weight):
@@ -557,6 +541,9 @@ def pack_deblend_object(st, obj_res, bands, jacobian):
     )
 
     st['s2n'] = obj_res['s2n']
+    row, col = jacobian.get_rowcol(obj_res['cen'][0], obj_res['cen'][1])
+    st['x_fit'] = col
+    st['y_fit'] = row
 
 
 def _e2g(e1, e2, e1_err, e2_err):
@@ -718,9 +705,10 @@ def _get_gauss_runner(rng, scale, bands):
 
 def fit_deblend(
     mbobs,
-    weights,
     sxcat,
+    cat,
     seg,
+    model,
     rng,
     extra_detections=None,
     extra_fixcen=None,
@@ -755,7 +743,7 @@ def fit_deblend(
         jointly with that group, with the configured model (never
         dev-classified), a size guess from the smoothing scale,
         and full kdeblend measurements; the catalog gains one row
-        per position, marked with color_det=1.  A position landing
+        per position, marked with extra_det.  A position landing
         on seg background is not fit; its row gets
         flags=FLAG_EXTRA_DET_OFF_SEG.  The caller chooses which
         positions to inject (e.g. an exclusion radius against the
@@ -789,7 +777,6 @@ def fit_deblend(
     from ngmix.prepsfadmom.prep import choose_fwhm_smooth
     from ngmix import GMixFatalError
 
-    model = 'exp'
     tol = 1.0e-5
     maxiter = 500
     maxiter_type = "fixed"
@@ -828,16 +815,6 @@ def fit_deblend(
         }
         for i in range(sxcat.size)
     ]
-
-    # one psf fit on the detection coadd fills the psf fields for
-    # all objects; the smoothing scale covers the largest band psf
-    # psf_runner = _get_admom_runner(rng)
-    # psf_res = psf_runner.go(detobs.psf)
-    psf_res = fit_and_set_mcal_psfs(
-        mbobs=mbobs,
-        weights=weights,
-        rng=rng,
-    )
 
     fwhm_smooth = choose_fwhm_smooth(mbobs, rng=rng)
     Tsmooth = fwhm_to_T(fwhm_smooth)
@@ -886,9 +863,7 @@ def fit_deblend(
             else:
                 off_seg.append(nsx + k)
 
-    cat = get_struct(bands=bands, n=nsx + n_extra)
-
-    cat['color_det'][nsx:] = 1
+    cat['extra_det'][nsx:] = True
     # extras have no sep flux_auto and keep the nan init
     # cat['s2n_det'][:nsx] = s2n_det
     for idx in off_seg:
@@ -969,10 +944,10 @@ def fit_deblend(
             if d2 < R_DUP_FIT ** 2:
                 cat['flags'][i] |= FLAG_DUPLICATE_EXTRA
 
-    cat['xcell'] = sxcat['x']
-    cat['ycell'] = sxcat['y']
-    _set_mcal_psfs(st=cat, psf_res=psf_res)
-    return cat
+    # cat['xcell'] = sxcat['x']
+    # cat['ycell'] = sxcat['y']
+    # _set_mcal_psfs(st=cat, psf_res=psf_res)
+    # return cat
 
 
 def fit_one_group(
@@ -1444,9 +1419,10 @@ def get_struct(bands, n=1):
         ('cell_i', 'i2'),
         ('cell_j', 'i2'),
         ('flags', 'i4'),
+        ('extra_det', bool),
+        ('is_primary', bool),
         ('numiter', 'i2'),
         ('group_size', 'i2'),
-        ('is_primary', bool),
         ('deblend_flags', 'i4'),
         ('mfrac', 'f4'),
 
@@ -1454,6 +1430,8 @@ def get_struct(bands, n=1):
         ('ycell', 'f4'),
         ('x', 'f4'),
         ('y', 'f4'),
+        ('x_fit', 'f4'),
+        ('y_fit', 'f4'),
         ('ra', 'f8'),
         ('dec', 'f8'),
 
@@ -1522,7 +1500,7 @@ def get_struct(bands, n=1):
 
 def _init_struct(dtype, n):
     """
-    build the array, initializing flags to 1, color_det to 0 and
+    build the array, initializing flags to 1, extra_det to 0 and
     everything else to nan
     """
     import numpy as np
@@ -1533,7 +1511,7 @@ def _init_struct(dtype, n):
         if 'flags' in name:
             output[name] = NO_ATTEMPT
         elif name in (
-            'color_det', 'numiter', 'group_size', 'cell_i', 'cell_j',
+            'numiter', 'group_size', 'cell_i', 'cell_j',
         ):
             output[name] = 0
         else:
@@ -1757,12 +1735,12 @@ def get_cell_jacobian(wcs, bbox, x, y):
     )
 
 
-def get_primary(sxcat):
+def get_primary(x, y):
     return (
-        (sxcat['x'] > OVERLAP_LOW)
-        & (sxcat['x'] < OVERLAP_HIGH)
-        & (sxcat['y'] > OVERLAP_LOW)
-        & (sxcat['y'] < OVERLAP_HIGH)
+        (x > OVERLAP_LOW)
+        & (x < OVERLAP_HIGH)
+        & (y > OVERLAP_LOW)
+        & (y < OVERLAP_HIGH)
     )
 
 
@@ -1861,14 +1839,21 @@ def _ap_kern_kern(x, m, h):
         return val
 
 
-def do_metacal_and_process(mbobs, rng, show):
+def do_metacal_and_process(mbobs, model, deblend, s2_detect, rng, show):
     import esutil as eu
 
     odict = do_all_metacal(mbobs=mbobs, rng=rng)
 
     dlist = []
     for key, mcal_mbobs in odict.items():
-        st = process_one_mbobs(mbobs=mcal_mbobs, rng=rng, show=show)
+        st = process_one_mbobs(
+            mbobs=mcal_mbobs,
+            model=model,
+            deblend=deblend,
+            s2_detect=s2_detect,
+            rng=rng,
+            show=show,
+        )
 
         st['mcal_step'] = 'ns' if key == 'noshear' else key
         dlist.append(st)
@@ -2003,51 +1988,93 @@ def run_metacal(obs, rng, types):
     return odict
 
 
-def process_one_mbobs(mbobs, rng, show):
+def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):
     detect_obs, weights = coadd_mbobs(mbobs)
     sxcat, seg = run_sep(detect_obs)
+    nsx = sxcat.size
 
-    is_primary = get_primary(sxcat)
+    psf_res = fit_and_set_mcal_psfs(
+        mbobs=mbobs, weights=weights, rng=rng,
+    )
 
-    if True:
-        extra_detections = get_s2_extra_detections(
-            mbobs=mbobs,
-            detobs=detect_obs,
-            sxcat=sxcat,
-            seg=seg,
-            rng=rng,
-            prior_extras=None,
-        )
+    # we can't do  extra detections without the psf
+    if psf_res['psf_flags'] == 0:
+
+        if s2_detect:
+            extra_detections = get_s2_extra_detections(
+                mbobs=mbobs,
+                detobs=detect_obs,
+                sxcat=sxcat,
+                seg=seg,
+                rng=rng,
+                prior_extras=None,
+            )
+            n_extra = len(extra_detections)
+        else:
+            extra_detections = None
+            n_extra = 0
+
+        bands = [obslist[0].meta['band'] for obslist in mbobs]
+        cat = get_struct(bands=bands, n=sxcat.size + n_extra)
+
+        cat['xcell'][:nsx] = sxcat['x']
+        cat['ycell'][:nsx] = sxcat['y']
+
+        if n_extra > 0:
+            cat['xcell'][nsx:] = [e[0] for e in extra_detections]
+            cat['ycell'][nsx:] = [e[1] for e in extra_detections]
+
+        _set_mcal_psfs(st=cat, psf_res=psf_res)
+
+        # if TRIM_TO_PRIMARY:
+        #     # when deblending we need to process all and trim
+        #     # afterward
+        #     w, = np.where(is_primary)
+        #     sxcat = sxcat[w]
+        #     is_primary = is_primary[w]
+
+        if not deblend:
+            do_single_fits(
+                mbobs=mbobs,
+                sxcat=sxcat,
+                cat=cat,
+                model=model,
+                rng=rng,
+            )
+        else:
+            fit_deblend(
+                mbobs=mbobs,
+                sxcat=sxcat,
+                cat=cat,
+                seg=seg,
+                model=model,
+                rng=rng,
+                extra_detections=extra_detections,
+                show=show,
+            )
+
     else:
-        extra_detections = None
+        print('psf_failure:', psf_res['psf_flags'])
 
-    if TRIM_TO_PRIMARY:
-        # when deblending we need to process all and trim
-        # afterward
-        w, = np.where(is_primary)
-        sxcat = sxcat[w]
-        is_primary = is_primary[w]
+        import matplotlib.pyplot as mplt
+        fig, axs = mplt.subplots(ncols=3)
+        for i, obslist in enumerate(mbobs):
+            axs[i].imshow(obslist[0].psf.image)
+            axs[i].set_title(obslist[0].meta['band'])
+        fig.savefig('bad-psfs.png', dpi=150)
 
-    if True:
-        cat = do_single_fits(
-            mbobs=mbobs,
-            weights=weights,
-            sxcat=sxcat,
-            rng=rng,
-        )
-    else:
-        cat = fit_deblend(
-            mbobs=mbobs,
-            weights=weights,
-            sxcat=sxcat,
-            extra_detections=extra_detections,
-            seg=seg,
-            rng=rng,
-            show=show,
-        )
+        # import IPython
+        # IPython.embed()
 
-    cat['is_primary'] = is_primary
+        # can't do extra without a psf
+        cat = get_struct(bands=bands, n=sxcat.size)
 
+        cat['xcell'] = sxcat['x']
+        cat['ycell'] = sxcat['y']
+
+        cat['flags'] = PSF_FAILURE
+
+    cat['is_primary'] = get_primary(cat['xcell'], cat['ycell'])
     return cat
 
 
@@ -2117,21 +2144,23 @@ def get_s2_extra_detections(
     import sxdes
     from scipy.stats import norm
     from scipy.ndimage import gaussian_filter
-    from . import detect
-    from .fitting import _get_admom_runner
 
-    khat = detect.make_kernel()
+    khat = make_kernel()
     khat = khat / khat.sum()
     p0 = norm.sf(0.8 / np.sqrt((khat ** 2).sum()))
 
     nband = len(mbobs)
     scale = detobs.jacobian.scale
 
-    runner = _get_admom_runner(rng)
-    fwhms = []
-    for b in range(nband):
-        res = runner.go(mbobs[b][0].psf)
-        fwhms.append(T_to_fwhm(res['T']))
+    fwhms = [
+        T_to_fwhm(obslist[0].psf.gmix.get_T())
+        for obslist in mbobs
+    ]
+    # runner = _get_admom_runner(rng)
+    # fwhms = []
+    # for b in range(nband):
+    #     res = runner.go(mbobs[b][0].psf)
+    #     fwhms.append(T_to_fwhm(res['T']))
 
     target = max(fwhms)
     smooth_px = [
@@ -2186,7 +2215,7 @@ def get_s2_extra_detections(
     v = np.concatenate(vals)
     noise_eff = np.quantile(v, 1 - p0) / 0.8
 
-    sx_config = dict(detect.get_sx_config())
+    sx_config = dict(get_sx_config())
     sx_config['filter_kernel'] = None
     sx_config['filter_type'] = 'matched'
     cat, _ = sxdes.run_sep(
@@ -2278,6 +2307,8 @@ def get_fname(tract, patch, with_mdet):
 def calculate_positions(bbox, wcs, cat):
     cat['x'] = cat['xcell'] + bbox.x.start
     cat['y'] = cat['ycell'] + bbox.y.start
+    cat['x_fit'] = cat['x_fit'] + bbox.x.start
+    cat['y_fit'] = cat['y_fit'] + bbox.y.start
 
     cat['ra'], cat['dec'] = wcs.pixelToSkyArray(
         cat['x'].astype('f8'),
@@ -2298,18 +2329,35 @@ def get_cell_info(nband, n=1):
     return np.zeros(n, dtype=dtype)
 
 
-def write_output(fname, st, cell_info, tract, patch, seed, with_mdet):
+def write_output(
+    fname,
+    st,
+    cell_info,
+    tract,
+    patch,
+    seed,
+    with_mdet,
+    redo_bg,
+    deblend,
+    s2_detect,
+):
     meta = np.zeros(1, dtype=[
         ('tract', 'i4'),
         ('patch', 'i4'),
         ('seed', 'i8'),
         ('with_mdet', bool),
+        ('redo_bg', bool),
+        ('deblend', bool),
+        ('s2_detect', bool),
         ('min_good_frac', 'f4'),
     ])
     meta['tract'] = tract
     meta['patch'] = patch
     meta['seed'] = seed
     meta['with_mdet'] = with_mdet
+    meta['redo_bg'] = redo_bg
+    meta['deblend'] = deblend
+    meta['s2_detect'] = s2_detect
     meta['min_good_frac'] = MIN_GOOD_FRAC
 
     print('writing:', fname)
@@ -2399,7 +2447,19 @@ def redo_background_old(deep_coadd):
     var[:, :] *= noise_factor ** 2
 
 
-def main(tract, patch, seed, with_mdet, redo_bg, outfile, progress, show):
+def main(
+    tract,
+    patch,
+    model,
+    seed,
+    with_mdet,
+    redo_bg,
+    outfile,
+    deblend,
+    s2_detect,
+    progress,
+    show,
+):
     from tqdm import trange
     import esutil as eu
 
@@ -2437,6 +2497,7 @@ def main(tract, patch, seed, with_mdet, redo_bg, outfile, progress, show):
 
     if progress:
         mrng_i = trange(1, 21, desc='cell_i', ncols=80, ascii=True)
+        # mrng_i = trange(17, 18, desc='cell_i', ncols=80, ascii=True)
     else:
         mrng_i = range(1, 21)
 
@@ -2470,9 +2531,23 @@ def main(tract, patch, seed, with_mdet, redo_bg, outfile, progress, show):
             apodize_mbobs(mbobs)
 
             if with_mdet:
-                cat = do_metacal_and_process(mbobs=mbobs, rng=rng, show=show)
+                cat = do_metacal_and_process(
+                    mbobs=mbobs,
+                    model=model,
+                    deblend=deblend,
+                    s2_detect=s2_detect,
+                    rng=rng,
+                    show=show,
+                )
             else:
-                cat = process_one_mbobs(mbobs=mbobs, rng=rng, show=show)
+                cat = process_one_mbobs(
+                    mbobs=mbobs,
+                    model=model,
+                    deblend=deblend,
+                    s2_detect=s2_detect,
+                    rng=rng,
+                    show=show,
+                )
                 cat['mcal_step'] = 'na'
 
             fit_and_set_psfrec(st=cat, mbobs=mbobs, rng=rng)
@@ -2502,6 +2577,9 @@ def main(tract, patch, seed, with_mdet, redo_bg, outfile, progress, show):
         patch=patch,
         seed=seed,
         with_mdet=with_mdet,
+        redo_bg=redo_bg,
+        deblend=deblend,
+        s2_detect=s2_detect,
     )
 
 
@@ -2512,8 +2590,11 @@ if __name__ == '__main__':
         seed=_args.seed,
         tract=_args.tract,
         patch=_args.patch,
-        progress=_args.progress,
-        show=_args.show,
+        model=_args.model,
+        deblend=_args.deblend,
+        s2_detect=_args.s2_detect,
         redo_bg=_args.redo_bg,
         outfile=_args.outfile,
+        progress=_args.progress,
+        show=_args.show,
     )
