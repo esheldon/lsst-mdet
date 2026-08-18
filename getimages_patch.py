@@ -40,7 +40,7 @@ MASK_RMAX = 450.0
 MINRAD = 20.0       # circle floor: subtracted cores never show
 STAR_MARGIN = 210   # off-patch stars whose wings still intrude
 GSAT = 15.2         # G saturation threshold of these coadds
-GSUB = 18.0         # subtract stars brighter than this
+GSUB = 19.0         # subtract stars brighter than this
 RUWE_MAX = 1.4      # unsaturated census guard
 GMAX = 18.0         # download depth
 BG_GROW = 12        # extra star-mask margin for the background
@@ -67,7 +67,7 @@ GAIA_ADQL = (
 )
 
 
-def fetch_gaia(wcs, bbox):
+def fetch_gaia(wcs, bbox, gmax=GMAX):
     """
     Gaia DR3 extract for this patch from the ESA TAP sync
     service (a few seconds), as a numpy structured array:
@@ -90,7 +90,7 @@ def fetch_gaia(wcs, bbox):
         ra=ctr.getRa().asDegrees(),
         dec=ctr.getDec().asDegrees(),
         rad=rad,
-        gmax=GMAX,
+        gmax=gmax,
     )
     data = urllib.parse.urlencode({
         'REQUEST': 'doQuery',
@@ -139,11 +139,13 @@ def circle_radius(gmag):
     )
 
 
-def select_stars(gaia, x, y, mask0):
+def select_stars(gaia, x, y, mask0, gsub=GSUB):
     """
     the subtract-and-mask census: on-patch stars that are
-    saturated (any RUWE) or clean point sources down to GSUB,
-    plus off-patch intruders bright enough for their wings to
+    saturated or brighter than gsub (no RUWE guard -- Gaia at
+    these depths is essentially pure point sources, and
+    high-RUWE binaries are still stars we want gone), plus
+    off-patch intruders bright enough for their wings to
     reach in.  Returns a structured array sorted brightest
     first
     """
@@ -163,11 +165,7 @@ def select_stars(gaia, x, y, mask0):
                 and sat[max(0, iy - m):iy + m + 1,
                         max(0, ix - m):ix + m + 1].any()
             )
-            is_bright = (
-                gmag < GSUB
-                and np.isfinite(ruwe) and ruwe < RUWE_MAX
-            )
-            if not (is_sat or is_bright):
+            if not (is_sat or gmag < gsub):
                 continue
         else:
             is_sat = 0
@@ -490,7 +488,15 @@ def get_cell_centers(deep_coadd):
         # grid.bbox_of(CellIJ(i, j)), centers at the bbox
         # midpoint.  Probe which CellIJ axis is y rather than
         # assuming the convention
-        n0, n1 = (int(v) for v in grid.grid_size)
+        gs = grid.grid_size
+        try:
+            n0, n1 = (int(v) for v in gs)
+        except TypeError:
+            # grid_size is itself a CellIJ
+            if hasattr(gs, 'i'):
+                n0, n1 = int(gs.i), int(gs.j)
+            else:
+                n0, n1 = int(gs.x), int(gs.y)
         b00 = grid.bbox_of(CellIJ(0, 0))
         i_is_y = True
         if n0 > 1:
@@ -629,6 +635,11 @@ def main():
         help='redo the background determination (after star '
              'subtraction when --starsub is on)',
     )
+    parser.add_argument(
+        '--gsub', type=float, default=GSUB,
+        help='subtract and mask Gaia stars brighter than '
+             'this; the download depth follows it',
+    )
     args = parser.parse_args()
 
     tract = args.tract
@@ -673,7 +684,10 @@ def main():
             need_gaia = args.starsub or args.redo_bg
             if gaia is None and need_gaia:
                 try:
-                    gaia = fetch_gaia(wcs, deep_coadd.bbox)
+                    gaia = fetch_gaia(
+                        wcs, deep_coadd.bbox,
+                        gmax=max(args.gsub, GMAX),
+                    )
                 except Exception as err:
                     print('    gaia download failed:', err)
                     gaia = False
@@ -685,7 +699,9 @@ def main():
                 x, y = gaia_pixel_positions(
                     gaia, wcs, deep_coadd.bbox,
                 )
-                stars = select_stars(gaia, x, y, mask0)
+                stars = select_stars(
+                    gaia, x, y, mask0, gsub=args.gsub,
+                )
                 starmask, comps = build_star_mask(stars, mask0)
 
                 if args.starsub:
@@ -842,7 +858,8 @@ def main():
                 fits.write_table(
                     star_table,
                     extname='gaia_stars',
-                    header={'GSUB': GSUB, 'MINRAD': MINRAD},
+                    header={'GSUB': args.gsub,
+                            'MINRAD': MINRAD},
                 )
 
 
