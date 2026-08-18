@@ -44,6 +44,7 @@ GSUB = 19.0         # subtract stars brighter than this
 RUWE_MAX = 1.4      # unsaturated census guard
 GMAX = 18.0         # download depth
 BG_GROW = 12        # extra star-mask margin for the background
+APOD_STARS = 12.0   # cosine taper width outside the star mask
 
 # empirical extended star template
 TMPL_HALF = 50      # measured stamp half size
@@ -392,7 +393,8 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
         )[tsl]
         rc = rr[tsl]
         usable = good[sl] & (tsh > 0)
-        lm = rc <= circle_radius(gmag)
+        rad = circle_radius(gmag)
+        lm = rc <= rad
         if st['on_image']:
             own = set()
             for dy in (-2, 0, 2):
@@ -411,7 +413,11 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
         if ring.sum() < 30:
             ring = None
             if not st['on_image']:
-                vis = usable & (rc >= 12)
+                # anchor outside the circle radius even though
+                # the mask itself is off-image: the nearest
+                # visible pixels of a bright intruder are core
+                # territory and measure garbage
+                vis = usable & (rc >= max(12.0, rad))
                 if vis.any():
                     vring = vis & (rc < rc[vis].min() + 10.0)
                     if vring.sum() >= 30:
@@ -456,7 +462,15 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
                     resid[ring] / st['T'][ring],
                 )), 0.0)
                 if ap is not None:
-                    amp = min(amp, 3.0 * ap)
+                    if amp < ap / 3.0:
+                        # failed or background-absorbed anchor
+                        # (a smooth background eats the wing
+                        # signal at a bright star's circle
+                        # edge); the flux relation is the
+                        # better estimate
+                        amp = ap
+                    else:
+                        amp = min(amp, 3.0 * ap)
             model[sl] += (amp - st['A']) * st['T']
             st['A'] = amp
 
@@ -640,6 +654,13 @@ def main():
         help='subtract and mask Gaia stars brighter than '
              'this; the download depth follows it',
     )
+    parser.add_argument(
+        '--apod-stars', action=argparse.BooleanOptionalAction,
+        default=True,
+        help='zero the star-mask regions in the image and '
+             'noise planes with a cosine taper: hard-edged '
+             'holes and raw saturated cores ring in k-space',
+    )
     args = parser.parse_args()
 
     tract = args.tract
@@ -723,18 +744,35 @@ def main():
             elif need_gaia:
                 print('    no gaia: star handling skipped')
 
+            dstar = None
+            if starmask is not None:
+                from scipy import ndimage
+                dstar = ndimage.distance_transform_edt(
+                    ~starmask,
+                )
             if args.redo_bg:
+                # margin outside the mask: rim pixels are
+                # partially contaminated and must not steer
+                # the background or noise calibration
                 smbg = None
-                if starmask is not None:
-                    from scipy import ndimage
-                    d = ndimage.distance_transform_edt(
-                        ~starmask,
-                    )
-                    # margin outside the mask: rim pixels are
-                    # partially contaminated and must not steer
-                    # the background or noise calibration
-                    smbg = d < BG_GROW
+                if dstar is not None:
+                    smbg = dstar < BG_GROW
                 redo_background(deep_coadd, starmask=smbg)
+
+            # apodize the star-mask regions AFTER the
+            # background determination, in both the image and
+            # the noise realization so they stay statistically
+            # matched
+            taper_applied = False
+            if args.starsub and args.apod_stars \
+                    and dstar is not None:
+                taper = 0.5 - 0.5 * np.cos(np.pi * np.clip(
+                    dstar / APOD_STARS, 0.0, 1.0,
+                ))
+                deep_coadd.image.array[:, :] *= taper
+                nz = deep_coadd.noise_realizations[0].array
+                nz[:, :] *= taper
+                taper_applied = True
         except Exception as err:
             print(err)
             continue
@@ -847,12 +885,25 @@ def main():
                 },
             )
             if starmask is not None and args.starsub:
-                # circles + flagged components of the census;
-                # pixels here are unreliable after subtraction
+                # 2 = star mask (zeroed when APOD > 0),
+                # 1 = taper zone (attenuated -- masked for any
+                # measurement, smooth enough for FFTs),
+                # 0 = clear
+                maskout = np.zeros(starmask.shape, dtype='u1')
+                if taper_applied:
+                    maskout[(dstar > 0)
+                            & (dstar < APOD_STARS)] = 1
+                maskout[starmask] = 2
                 fits.write_image(
-                    starmask.astype('u1'),
+                    maskout,
                     extname='starmask',
                     compress='gzip_2',
+                    header={
+                        'APOD': (
+                            APOD_STARS if taper_applied
+                            else 0
+                        ),
+                    },
                 )
             if star_table is not None:
                 fits.write_table(
