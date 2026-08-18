@@ -42,7 +42,7 @@ STAR_MARGIN = 210   # off-patch stars whose wings still intrude
 GSAT = 15.2         # G saturation threshold of these coadds
 GSUB = 19.0         # subtract stars brighter than this
 RUWE_MAX = 1.4      # unsaturated census guard
-GMAX = 18.0         # download depth
+GMAX = 19.0         # download depth
 BG_GROW = 12        # extra star-mask margin for the background
 
 # empirical extended star template
