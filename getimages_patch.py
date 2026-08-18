@@ -477,40 +477,52 @@ def get_cell_centers(deep_coadd):
     lsst_cells_v2 150 px inner-cell grid over the patch bbox
     """
     bbox = deep_coadd.bbox
-    grid = getattr(deep_coadd, 'grid', None)
-    if grid is None:
-        grid = getattr(deep_coadd, 'cell_grid', None)
-    if grid is not None:
-        cs = None
-        for name in ('cell_size', 'cell_inner_size',
-                     'inner_cell_size', 'cellSize', 'pitch'):
-            cs = getattr(grid, name, None)
-            if cs is not None:
-                break
-        if cs is None:
-            attrs = [a for a in dir(grid)
-                     if not a.startswith('_')]
-            print('cell grid has no recognized cell-size '
-                  f'attribute; grid attributes: {attrs}')
+    try:
+        from lsst.images._cell_grid import CellIJ
+
+        grid = deep_coadd.grid
+
+        def center(b, ax):
+            a = getattr(b, ax)
+            return 0.5 * (a.start + a.stop)
+
+        # cell access as in process_cells.py pull_mbobs:
+        # grid.bbox_of(CellIJ(i, j)), centers at the bbox
+        # midpoint.  Probe which CellIJ axis is y rather than
+        # assuming the convention
+        n0, n1 = (int(v) for v in grid.grid_size)
+        b00 = grid.bbox_of(CellIJ(0, 0))
+        i_is_y = True
+        if n0 > 1:
+            b10 = grid.bbox_of(CellIJ(1, 0))
+            i_is_y = b10.y.start != b00.y.start
+        if i_is_y:
+            nyc, nxc = n0, n1
+            ys = np.array([
+                center(grid.bbox_of(CellIJ(i, 0)), 'y')
+                for i in range(nyc)
+            ])
+            xs = np.array([
+                center(grid.bbox_of(CellIJ(0, j)), 'x')
+                for j in range(nxc)
+            ])
         else:
-            try:
-                try:
-                    csx, csy = int(cs.x), int(cs.y)
-                except AttributeError:
-                    try:
-                        csx, csy = (int(v) for v in cs)
-                    except TypeError:
-                        csx = csy = int(cs)
-                gb = getattr(grid, 'bbox', bbox)
-                xs = np.arange(
-                    gb.x.start + csx / 2 - 0.5, gb.x.stop, csx,
-                )
-                ys = np.arange(
-                    gb.y.start + csy / 2 - 0.5, gb.y.stop, csy,
-                )
-                return xs, ys, (csx, csy), 'coadd grid'
-            except Exception as err:
-                print('cell grid introspection failed:', err)
+            nxc, nyc = n0, n1
+            xs = np.array([
+                center(grid.bbox_of(CellIJ(i, 0)), 'x')
+                for i in range(nxc)
+            ])
+            ys = np.array([
+                center(grid.bbox_of(CellIJ(0, j)), 'y')
+                for j in range(nyc)
+            ])
+        csx = int(round(xs[1] - xs[0])) if nxc > 1 else CELL_SIZE
+        csy = int(round(ys[1] - ys[0])) if nyc > 1 else CELL_SIZE
+        return (
+            xs, ys, (csx, csy), f'coadd grid {nyc} x {nxc}',
+        )
+    except Exception as err:
+        print('cell grid introspection failed:', err)
     csx = csy = CELL_SIZE
     xs = np.arange(bbox.x.start + csx / 2 - 0.5, bbox.x.stop, csx)
     ys = np.arange(bbox.y.start + csy / 2 - 0.5, bbox.y.stop, csy)
