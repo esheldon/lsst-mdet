@@ -667,7 +667,8 @@ def main():
         print(data_id)
         try:
             deep_coadd = butler.get('deep_coadd', dataId=data_id)
-            deep_coadd.apply_background(None)
+            # deep_coadd.apply_background(None)
+            deep_coadd.apply_background('object')
 
             need_gaia = args.starsub or args.redo_bg
             if gaia is None and need_gaia:
