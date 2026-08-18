@@ -481,18 +481,36 @@ def get_cell_centers(deep_coadd):
     if grid is None:
         grid = getattr(deep_coadd, 'cell_grid', None)
     if grid is not None:
-        try:
-            cs = getattr(grid, 'cell_size', None)
+        cs = None
+        for name in ('cell_size', 'cell_inner_size',
+                     'inner_cell_size', 'cellSize', 'pitch'):
+            cs = getattr(grid, name, None)
+            if cs is not None:
+                break
+        if cs is None:
+            attrs = [a for a in dir(grid)
+                     if not a.startswith('_')]
+            print('cell grid has no recognized cell-size '
+                  f'attribute; grid attributes: {attrs}')
+        else:
             try:
-                csx, csy = int(cs.x), int(cs.y)
-            except AttributeError:
-                csx = csy = int(cs)
-            gb = getattr(grid, 'bbox', bbox)
-            xs = np.arange(gb.x.start + csx / 2 - 0.5, gb.x.stop, csx)
-            ys = np.arange(gb.y.start + csy / 2 - 0.5, gb.y.stop, csy)
-            return xs, ys, (csx, csy), 'coadd grid'
-        except Exception as err:
-            print('cell grid introspection failed:', err)
+                try:
+                    csx, csy = int(cs.x), int(cs.y)
+                except AttributeError:
+                    try:
+                        csx, csy = (int(v) for v in cs)
+                    except TypeError:
+                        csx = csy = int(cs)
+                gb = getattr(grid, 'bbox', bbox)
+                xs = np.arange(
+                    gb.x.start + csx / 2 - 0.5, gb.x.stop, csx,
+                )
+                ys = np.arange(
+                    gb.y.start + csy / 2 - 0.5, gb.y.stop, csy,
+                )
+                return xs, ys, (csx, csy), 'coadd grid'
+            except Exception as err:
+                print('cell grid introspection failed:', err)
     csx = csy = CELL_SIZE
     xs = np.arange(bbox.x.start + csx / 2 - 0.5, bbox.x.stop, csx)
     ys = np.arange(bbox.y.start + csy / 2 - 0.5, bbox.y.stop, csy)
