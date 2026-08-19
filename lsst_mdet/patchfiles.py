@@ -9,7 +9,6 @@ redetermination and star subtraction are getimages-time
 operations and are refused here: one canonical place per
 operation keeps provenance clean
 """
-import os
 import numpy as np
 
 from .defaults import CELL_SIZE
@@ -128,15 +127,7 @@ class FilePatchCoadd(object):
             self._var = f['var'].read()
             self._mask = f['mask'].read()
             self._noise = f['noise'].read()
-            if 'mfrac' in extnames:
-                self._mfrac = f['mfrac'].read()
-            else:
-                print(f'    {os.path.basename(fname)}: no mfrac '
-                      'extension, using zeros (regenerate with '
-                      'current getimages for real mfrac)')
-                self._mfrac = np.zeros(
-                    self._image.shape, dtype='f4',
-                )
+            self._mfrac = f['mfrac'].read()
             self._psfs = f['psfs'].read().astype('f8')
             self._cells = f['psf_cells'].read()
             self._starmask = None
