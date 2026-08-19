@@ -21,6 +21,7 @@ from ..starsub import (
     subtract_stars,
 )
 from ..wcs import get_wcs_header
+from ..patchfiles import get_patch_filename
 
 
 def main():
@@ -76,7 +77,9 @@ def main():
         if not os.path.exists(odir):
             os.makedirs(odir)
 
-        fname = f'{odir}/{tract}-{patch}-{band}.fits'
+        fname = get_patch_filename(
+            tract=tract, patch=patch, band=band, patch_dir=odir,
+        )
 
         if os.path.exists(fname):
             continue

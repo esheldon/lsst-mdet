@@ -15,6 +15,55 @@ import numpy as np
 from .defaults import CELL_SIZE
 
 
+def load_coadds_files(patch_dir, tract, patch, bands):
+    """
+    load a patch from getimages FITS output: the file-backed
+    counterpart of the butler loader.  Returns
+    (coadds, wcs, starmask), with starmask the combined
+    attenuation-zone mask when the files carry a starmask
+    extension (getimages --starsub) and None otherwise
+    """
+    coadds = []
+    starmask = None
+    for band in bands:
+        fname = get_patch_filename(
+            tract=tract, patch=patch, band=band, patch_dir=patch_dir,
+        )
+        print(f'reading {fname}')
+        coadd = FilePatchCoadd(fname, band)
+        coadds.append(coadd)
+        if coadd._starmask is not None:
+            sm = coadd._starmask >= 1
+            starmask = sm if starmask is None \
+                else (starmask | sm)
+    wcs = FileWcs(coadds[0].hdr)
+    return coadds, wcs, starmask
+
+
+def get_patch_filename(tract, patch, band, patch_dir=None):
+    """
+    Get the standard patch file name
+
+    Parameters
+    ----------
+    tract: int
+        The tract id
+    patch: int
+        The patch id
+    patch_dir: str, optional
+        Optional directory
+
+    Returns
+    -------
+    filename
+    """
+    import os
+    fname = f'{tract:05d}-{patch:02d}-{band}.fits'
+    if patch_dir is not None:
+        fname = os.path.join(patch_dir, fname)
+    return patch_dir
+
+
 class SimpleAxis(object):
     def __init__(self, start, stop):
         self.start = start
@@ -195,28 +244,3 @@ class FileWcs(object):
             [dra_dx, dra_dy],
             [ddec_dx, ddec_dy],
         ]) * 3600.0
-
-
-def load_coadds_files(patch_dir, tract, patch, bands):
-    """
-    load a patch from getimages FITS output: the file-backed
-    counterpart of the butler loader.  Returns
-    (coadds, wcs, starmask), with starmask the combined
-    attenuation-zone mask when the files carry a starmask
-    extension (getimages --starsub) and None otherwise
-    """
-    coadds = []
-    starmask = None
-    for band in bands:
-        fname = os.path.join(
-            patch_dir, f'{tract}-{patch}-{band}.fits',
-        )
-        print(f'reading {fname}')
-        coadd = FilePatchCoadd(fname, band)
-        coadds.append(coadd)
-        if coadd._starmask is not None:
-            sm = coadd._starmask >= 1
-            starmask = sm if starmask is None \
-                else (starmask | sm)
-    wcs = FileWcs(coadds[0].hdr)
-    return coadds, wcs, starmask
