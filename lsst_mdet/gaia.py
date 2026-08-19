@@ -1,0 +1,95 @@
+"""
+Gaia DR3 download and coordinate handling
+"""
+import numpy as np
+
+
+# Gaia-driven bright-star subtraction and masking.  Every clean
+# Gaia star down to GSUB is subtracted with an empirical
+# extended template (its wings are the faint-star carpet that
+# biases the background) and masked with a floored circle that
+# hides the core, where a field-average template is wrong.
+# Circles follow the flagged-arm extent law measured over 58
+# stars in 4 fields
+GAIA_EPOCH = 2016.0
+
+
+OBS_EPOCH = 2025.0
+
+
+GMAX = 19.0         # download depth
+
+
+GAIA_TAP = 'https://gea.esac.esa.int/tap-server/tap/sync'
+
+
+GAIA_ADQL = (
+    'SELECT source_id, ra, dec, pmra, pmdec, parallax, '
+    'phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag, ruwe '
+    'FROM gaiadr3.gaia_source '
+    "WHERE 1=CONTAINS(POINT('ICRS', ra, dec), "
+    "CIRCLE('ICRS', {ra:.6f}, {dec:.6f}, {rad:.4f})) "
+    'AND phot_g_mean_mag < {gmax}'
+)
+
+
+def fetch_gaia(wcs, bbox, gmax=GMAX):
+    """
+    Gaia DR3 extract for this patch from the ESA TAP sync
+    service (a few seconds), as a numpy structured array:
+    circle centered on the patch, corner radius plus margin
+    for off-patch intruders
+    """
+    import io
+    import urllib.request
+    import urllib.parse
+
+    xmid = 0.5 * (bbox.x.start + bbox.x.stop)
+    ymid = 0.5 * (bbox.y.start + bbox.y.stop)
+    ctr = wcs.pixelToSky(xmid, ymid)
+    corner = wcs.pixelToSky(
+        float(bbox.x.start), float(bbox.y.start),
+    )
+    rad = ctr.separation(corner).asDegrees() + 0.02
+
+    query = GAIA_ADQL.format(
+        ra=ctr.getRa().asDegrees(),
+        dec=ctr.getDec().asDegrees(),
+        rad=rad,
+        gmax=gmax,
+    )
+    data = urllib.parse.urlencode({
+        'REQUEST': 'doQuery',
+        'LANG': 'ADQL',
+        'FORMAT': 'csv',
+        'QUERY': query,
+    }).encode()
+    with urllib.request.urlopen(
+        GAIA_TAP, data=data, timeout=120,
+    ) as resp:
+        text = resp.read().decode()
+    if not text.startswith('source_id'):
+        raise RuntimeError(
+            'unexpected TAP response: ' + text[:200],
+        )
+    gaia = np.genfromtxt(
+        io.StringIO(text), delimiter=',', names=True,
+    )
+    print(f'    gaia: {gaia.size} stars')
+    return gaia
+
+
+def gaia_pixel_positions(gaia, wcs, bbox):
+    """
+    patch-frame pixel positions with proper motions propagated
+    to the observation epoch
+    """
+    dt = OBS_EPOCH - GAIA_EPOCH
+    pmra = np.nan_to_num(gaia['pmra'])
+    pmdec = np.nan_to_num(gaia['pmdec'])
+    cosd = np.cos(np.deg2rad(gaia['dec']))
+    ra = gaia['ra'] + dt * pmra / 3.6e6 / cosd
+    dec = gaia['dec'] + dt * pmdec / 3.6e6
+
+    x, y = wcs.skyToPixelArray(ra, dec, degrees=True)
+    return x - bbox.x.start, y - bbox.y.start
