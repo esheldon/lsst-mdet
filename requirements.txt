@@ -1,0 +1,18 @@
+# core scientific stack (conda-forge or PyPI)
+numpy
+scipy
+numba
+matplotlib
+tqdm
+# astronomy (conda-forge; ngmix has no PyPI package)
+sep
+ngmix
+des-sxdes
+fofx
+rustfits
+# ALSO REQUIRED but not yet packaged on PyPI or conda
+# (install from source; see README):
+#   metacal
+#   kdeblend
+# The LSST science pipelines are required only for
+# lsst_mdet.cells, lsst_mdet.wcs and the cli tools

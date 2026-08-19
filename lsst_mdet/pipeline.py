@@ -6,6 +6,7 @@ from .deblend import fit_deblend
 from .defaults import PSF_FAILURE
 from .detect import run_sep
 from .extra_detect import get_s2_extra_detections
+import numpy as np
 from .maxlike import do_single_fits
 from .metacal import do_all_metacal
 from .mfrac import sample_mfrac, smooth_mfrac_map
@@ -15,8 +16,6 @@ from .util import get_primary
 
 
 def do_metacal_and_process(mbobs, model, deblend, s2_detect, rng, show):
-    import esutil as eu
-
     odict = do_all_metacal(mbobs=mbobs, rng=rng)
 
     dlist = []
@@ -33,7 +32,7 @@ def do_metacal_and_process(mbobs, model, deblend, s2_detect, rng, show):
         st['mcal_step'] = 'ns' if key == 'noshear' else key
         dlist.append(st)
 
-    return eu.numpy_util.combine_arrlist(dlist)
+    return np.concatenate(dlist)
 
 
 def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):

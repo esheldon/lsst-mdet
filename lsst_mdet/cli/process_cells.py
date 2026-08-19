@@ -54,7 +54,6 @@ def main(
     show,
 ):
     from tqdm import trange
-    import esutil as eu
 
     rng = np.random.RandomState(seed)
 
@@ -178,8 +177,8 @@ def main(
 
     print(f'kept {nkeep}/{ncell} {nkeep / ncell:g}')
 
-    cell_info = eu.numpy_util.combine_arrlist(cell_info_list)
-    st = eu.numpy_util.combine_arrlist(dlist)
+    cell_info = np.concatenate(cell_info_list)
+    st = np.concatenate(dlist)
 
     write_output(
         fname=outfile,
