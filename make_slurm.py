@@ -15,10 +15,14 @@ outfile=$4
 
 export OMP_NUM_THREADS=1
 
-python process_cells.py \
+/usr/bin/time -v python process_cells.py \
     --seed ${seed} \
     --tract ${tract} \
     --patch ${patch} \
+    --redo-bg \
+    --model exp \
+    --deblend \
+    --starsub \
     --outfile ${outfile} \
     --mdet
 """
