@@ -70,6 +70,13 @@ def main():
                         gmax=max(args.gsub, GMAX),
                     )
                 except Exception as err:
+                    if args.starsub:
+                        # never write files labeled starsub
+                        # without the subtraction: fail loudly
+                        raise RuntimeError(
+                            'gaia download failed and '
+                            '--starsub was requested'
+                        ) from err
                     print('    gaia download failed:', err)
                     gaia = False
 
