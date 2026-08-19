@@ -1,6 +1,7 @@
 """
 TODO
 
+- make healsparse map, and record cells with no detections due to masking
 - mfrac for deblended objects
 - star mask
 - decide MIN_GOOD_FRAC
@@ -115,7 +116,11 @@ def run_sep(obs):
     import numpy as np
     import sxdes
 
-    medwt = np.median(obs.weight)
+    # median over valid pixels only: with star masking a cell
+    # can be 20-50 percent zero weight and still pass the
+    # good-frac gate, and the all-pixel median is then zero,
+    # sending the detection threshold to infinity
+    medwt = np.median(obs.weight[obs.weight > 0])
     noise = 1 / np.sqrt(medwt)
 
     with obs.writeable():
@@ -1215,6 +1220,10 @@ def get_groups(sxcat, seg):
     import fofx
 
     nobj = sxcat.size
+    if nobj == 0:
+        # a heavily star-masked cell can legitimately detect
+        # nothing; fofx crashes on an empty seg map
+        return []
     parent = list(range(nobj))
 
     def find(a):
@@ -2018,6 +2027,7 @@ def run_metacal(obs, rng, types):
 
 
 def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):
+    bands = [obslist[0].meta['band'] for obslist in mbobs]
     detect_obs, weights = coadd_mbobs(mbobs)
     sxcat, seg = run_sep(detect_obs)
     nsx = sxcat.size
@@ -2043,7 +2053,6 @@ def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):
             extra_detections = None
             n_extra = 0
 
-        bands = [obslist[0].meta['band'] for obslist in mbobs]
         cat = get_struct(bands=bands, n=sxcat.size + n_extra)
 
         cat['xcell'][:nsx] = sxcat['x']
@@ -2259,7 +2268,9 @@ def get_s2_extra_detections(
         ay = np.concatenate([ay, prior_extras[:, 1]])
     extras = []
     for xi, yi in zip(cat['x'], cat['y']):
-        if np.min(
+        # ax can be empty when sep found nothing (heavily
+        # masked cell) and there are no prior extras
+        if ax.size and np.min(
             (ax - xi) ** 2 + (ay - yi) ** 2
         ) < S2_EXTRA_MIN_SEP ** 2:
             continue
@@ -2298,7 +2309,13 @@ def _starlet_plane(image, jplane):
 def _mad_sigma(x):
     import numpy as np
 
-    return 1.4826 * np.median(np.abs(x - np.median(x)))
+    # exclude exact zeros: star-masked (apodized) noise planes
+    # can be mostly zero, driving the all-pixel MAD to zero and
+    # the inverse-variance weights to infinity
+    v = x[x != 0]
+    if v.size < 100:
+        v = x
+    return 1.4826 * np.median(np.abs(v - np.median(v)))
 
 
 def _phase_randomized(noise, rng):
