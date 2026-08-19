@@ -27,8 +27,6 @@ export OMP_NUM_THREADS=1
     --mdet
 """
 
-#SBATCH --mem-per-cpu=2.0G
-
 SLURM_TEMPLATE = r'''#!/bin/bash
 # Name of the job
 #SBATCH --job-name=%(job_name)s

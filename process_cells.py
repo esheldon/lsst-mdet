@@ -75,6 +75,12 @@ def get_args():
     parser.add_argument('--deblend', action='store_true')
     parser.add_argument('--s2-detect', action='store_true')
     parser.add_argument('--redo-bg', action='store_true')
+    parser.add_argument(
+        '--starsub', action='store_true',
+        help='subtract and mask the Gaia stars at the patch '
+             'level (getimages_patch machinery) before any '
+             'background redo',
+    )
     parser.add_argument('--mdet', action='store_true')
     parser.add_argument('--progress', action='store_true')
     parser.add_argument('--show', action='store_true')
@@ -123,7 +129,7 @@ def run_sep(obs):
     return objs, seg
 
 
-def get_detect_noise(noise, kernel):
+def get_detect_noise(noise, kernel, weight=None):
     """
     Get the noise value on the detection-kernel scale, used by
     mdet.do_metacal to calibrate the weight maps for correlated noise.
@@ -141,16 +147,27 @@ def get_detect_noise(noise, kernel):
         noise field for a metacal'd image
     kernel: array
         The detection kernel
+    weight: array, optional
+        The weight map.  When given, the std is measured only
+        over valid pixels eroded by the kernel width: with the
+        star-masked (apodized to zero) noise plane, a plain
+        std over all pixels underestimates sigma by about
+        sqrt(1 - fmask) and inflates the weights and S/N
 
     Returns
     -------
     noise value for sxdes.run_sep
     """
     import numpy as np
-    from scipy.ndimage import convolve
+    from scipy.ndimage import convolve, binary_erosion
 
     khat = kernel / kernel.sum()
     conv = convolve(noise, khat, mode='reflect')
+    if weight is not None:
+        valid = binary_erosion(weight > 0, iterations=4)
+        if valid.sum() < 1000:
+            valid = weight > 0
+        return conv[valid].std() / np.sqrt((khat**2).sum())
     return conv.std() / np.sqrt((khat**2).sum())
 
 
@@ -1593,7 +1610,7 @@ def coadd_mbobs(mbobs):
     return coadd_obs, weights
 
 
-def pull_mbobs(deep_coadds, cell_i, cell_j, wcs):
+def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
     import ngmix
 
     nband = len(deep_coadds)
@@ -1615,6 +1632,18 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs):
         mask = deep_coadd.mask[bbox].array[:, :, 0]
 
         good = np.isfinite(var) & (mask & DM_OUT == 0)
+
+        if starmask is not None:
+            # the star attenuation zone (patch-frame array)
+            # carries no usable signal after subtraction and
+            # apodization
+            pb = deep_coadd.bbox
+            good &= ~starmask[
+                bbox.y.start - pb.y.start:
+                bbox.y.stop - pb.y.start,
+                bbox.x.start - pb.x.start:
+                bbox.x.stop - pb.x.start,
+            ]
 
         w = np.where(good)
         good_frac = w[0].size / var.size
@@ -1691,6 +1720,7 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs):
             sigma_band = get_detect_noise(
                 noise=noise,
                 kernel=make_kernel(),
+                weight=obs.weight,
             )
             medwt = np.median(obs.weight[obs.weight > 0])
             # print(f'    median weight: {medwt:g} sigma_band: {sigma_band:g}')
@@ -1916,6 +1946,7 @@ def do_metacal_one_band(obs, rng):
     sigma_band = get_detect_noise(
         noise=mcal_noise,
         kernel=make_kernel(),
+        weight=obs.weight,
     )
 
     for key, mobs in odict.items():
@@ -2337,6 +2368,7 @@ def write_output(
     seed,
     with_mdet,
     redo_bg,
+    starsub,
     deblend,
     s2_detect,
 ):
@@ -2344,9 +2376,10 @@ def write_output(
         ('tract', 'i4'),
         ('patch', 'i4'),
         ('seed', 'i8'),
-        ('model', 'U5')
+        ('model', 'U5'),
         ('with_mdet', bool),
         ('redo_bg', bool),
+        ('starsub', bool),
         ('deblend', bool),
         ('s2_detect', bool),
         ('min_good_frac', 'f4'),
@@ -2357,6 +2390,7 @@ def write_output(
     meta['with_mdet'] = with_mdet
     meta['model'] = model
     meta['redo_bg'] = redo_bg
+    meta['starsub'] = starsub
     meta['deblend'] = deblend
     meta['s2_detect'] = s2_detect
     meta['min_good_frac'] = MIN_GOOD_FRAC
@@ -2368,7 +2402,42 @@ def write_output(
         fits.write_table(cell_info, extname='cell_info', compress=True)
 
 
-def redo_background(deep_coadd):
+def subtract_and_mask_stars(deep_coadd, wcs, gaia):
+    """
+    Gaia star subtraction and masking at the patch level, using
+    the getimages_patch.py machinery: every census star is
+    subtracted with the empirical extended template, then its
+    floored circle plus flagged components are apodized to zero
+    in the image and noise planes.
+
+    Returns the attenuation-zone mask (bool, patch frame,
+    covering the taper as well as the zeroed core): those
+    pixels must carry zero weight downstream and stay out of
+    the background estimation
+    """
+    from scipy import ndimage
+    import getimages_patch as gip
+
+    bbox = deep_coadd.bbox
+    mask0 = deep_coadd.mask.array[:, :, 0]
+    x, y = gip.gaia_pixel_positions(gaia, wcs, bbox)
+    stars = gip.select_stars(gaia, x, y, mask0)
+    starmask, comps = gip.build_star_mask(stars, mask0)
+    gip.subtract_stars(
+        deep_coadd.image.array,
+        deep_coadd.variance.array,
+        mask0, gaia, x, y, stars, comps,
+    )
+    d = ndimage.distance_transform_edt(~starmask)
+    taper = 0.5 - 0.5 * np.cos(np.pi * np.clip(
+        d / gip.APOD_STARS, 0.0, 1.0,
+    ))
+    deep_coadd.image.array[:, :] *= taper
+    deep_coadd.noise_realizations[0].array[:, :] *= taper
+    return d < gip.APOD_STARS
+
+
+def redo_background(deep_coadd, starmask=None):
     import sep
 
     image = deep_coadd.image.array
@@ -2381,6 +2450,10 @@ def redo_background(deep_coadd):
         & np.isfinite(noise)
         & (mask & DM_OUT == 0)
     )
+    if starmask is not None:
+        # star vicinities are subtracted/apodized; keep them
+        # out of the background boxes and noise calibration
+        good &= ~starmask
     bad = ~good
 
     bkg = sep.Background(image, mask=bad)
@@ -2455,6 +2528,7 @@ def main(
     seed,
     with_mdet,
     redo_bg,
+    starsub,
     outfile,
     deblend,
     s2_detect,
@@ -2482,6 +2556,8 @@ def main(
     print(fname)
 
     deep_coadds = []
+    gaia = None
+    starmasks = []
     for band in bands:
         data_id = {
             "band": band,
@@ -2493,9 +2569,25 @@ def main(
         deep_coadd = butler.get('deep_coadd', dataId=data_id)
         # deep_coadd.apply_background(None)
         deep_coadd.apply_background('object')
+        if starsub:
+            if gaia is None:
+                import getimages_patch as gip
+                gaia = gip.fetch_gaia(wcs, deep_coadd.bbox)
+            starmasks.append(subtract_and_mask_stars(
+                deep_coadd, wcs, gaia,
+            ))
         if redo_bg:
-            redo_background(deep_coadd)
+            redo_background(
+                deep_coadd,
+                starmask=starmasks[-1] if starsub else None,
+            )
         deep_coadds.append(deep_coadd)
+
+    # one mask for all bands: consistent footprints downstream
+    starmask = None
+    if starsub:
+        starmask = np.logical_or.reduce(starmasks)
+        print(f'union star mask fraction {starmask.mean():.3f}')
 
     if progress:
         mrng_i = trange(1, 21, desc='cell_i', ncols=80, ascii=True)
@@ -2522,6 +2614,7 @@ def main(
                 cell_i=cell_i,
                 cell_j=cell_j,
                 wcs=wcs,
+                starmask=starmask,
             )
             cell_info['tract'] = tract
             cell_info['patch'] = patch
@@ -2581,6 +2674,7 @@ def main(
         seed=seed,
         with_mdet=with_mdet,
         redo_bg=redo_bg,
+        starsub=starsub,
         deblend=deblend,
         s2_detect=s2_detect,
     )
@@ -2597,6 +2691,7 @@ if __name__ == '__main__':
         deblend=_args.deblend,
         s2_detect=_args.s2_detect,
         redo_bg=_args.redo_bg,
+        starsub=_args.starsub,
         outfile=_args.outfile,
         progress=_args.progress,
         show=_args.show,
