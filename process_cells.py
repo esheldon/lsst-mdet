@@ -361,7 +361,7 @@ def extract_stamp_obs(obs, icat, stamp_size=49):
     return stamp_obs
 
 
-def do_single_fits(mbobs, sxcat, cat, rng):
+def do_single_fits(mbobs, sxcat, cat, model, rng):
     """
     Fit each object independently from its own postage stamp
 
@@ -401,8 +401,9 @@ def do_single_fits(mbobs, sxcat, cat, rng):
                 icat=sxcat[i],
             )
             # # flags are explicitly set
-            fit_gauss(
+            fit_ml(
                 st=cat[i],
+                model=model,
                 rng=rng,
                 mbobs=stamp_mbobs,
             )
@@ -439,9 +440,9 @@ def calculate_mfrac(mbobs, mfrac_weight):
     return stats["sums"][5] / stats["wsum"]
 
 
-def fit_gauss(st, rng, mbobs):
+def fit_ml(st, model, rng, mbobs):
     """
-    Fit a Gaussian to the observation using maximum likelihood.  The PSF is fit
+    Fit a model to the observation using maximum likelihood.  The PSF is fit
     first, then the image is fit using a model convolved by the PSF.  Thus the
     fit is "pre-PSF".
 
@@ -463,8 +464,9 @@ def fit_gauss(st, rng, mbobs):
 
     bands = [obslist[0].meta['band'] for obslist in mbobs]
 
-    runner = _get_gauss_runner(
+    runner = _get_ml_runner(
         rng=rng,
+        model=model,
         scale=mbobs[0][0].jacobian.scale,
         bands=bands,
     )
@@ -636,9 +638,9 @@ FIT_PARS = {
 }
 
 
-def _get_gauss_runner(rng, scale, bands):
+def _get_ml_runner(rng, scale, model, bands):
     """
-    Get an ngmix runner for the gaussian fit
+    Get an ngmix runner for the model fit
     """
     import ngmix
 
@@ -648,7 +650,7 @@ def _get_gauss_runner(rng, scale, bands):
         nband=len(bands),
     )
     fitter = ngmix.fitting.Fitter(
-        model='gauss',
+        model=model,
         prior=prior,
         use_noise_image=True,
         fit_pars=FIT_PARS.copy(),
