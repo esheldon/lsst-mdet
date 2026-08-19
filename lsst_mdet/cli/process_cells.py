@@ -2,7 +2,6 @@
 cli/process_cells
 """
 import numpy as np
-import os
 from ..apodize import apodize_mbobs
 from ..cells import load_coadds_butler, pull_mbobs
 from ..patchfiles import load_coadds_files

@@ -193,6 +193,42 @@ class FilePatchCoadd(object):
         return self._psfs[int(np.argmin(d2))]
 
 
+class _Angle(object):
+    def __init__(self, deg):
+        self.deg = deg
+
+    def asDegrees(self):
+        return self.deg
+
+
+class _SpherePoint(object):
+    """the slice of the DM SpherePoint API fetch_gaia uses"""
+
+    def __init__(self, ra, dec):
+        self.ra = ra
+        self.dec = dec
+
+    def getRa(self):
+        return _Angle(self.ra)
+
+    def getDec(self):
+        return _Angle(self.dec)
+
+    def separation(self, other):
+        import numpy as np
+
+        r1, d1, r2, d2 = map(np.deg2rad, (
+            self.ra, self.dec, other.ra, other.dec,
+        ))
+        cossep = (
+            np.sin(d1) * np.sin(d2)
+            + np.cos(d1) * np.cos(d2) * np.cos(r1 - r2)
+        )
+        return _Angle(float(np.rad2deg(
+            np.arccos(np.clip(cossep, -1, 1)),
+        )))
+
+
 class FileWcs(object):
     """
     astropy-backed tract wcs from the patch header, presenting
@@ -216,6 +252,12 @@ class FileWcs(object):
         cards['CRPIX2'] = hdr['CRPIX2'] + y0
         cards['NAXIS'] = 2
         self.wcs = WCS(cards)
+
+    def pixelToSky(self, x, y):
+        """scalar pixel -> sky, DM style: an object with
+        getRa/getDec (asDegrees) and separation"""
+        ra, dec = self.wcs.wcs_pix2world(float(x), float(y), 0)
+        return _SpherePoint(float(ra), float(dec))
 
     def pixelToSkyArray(self, x, y, degrees=True):
         ra, dec = self.wcs.wcs_pix2world(x, y, 0)

@@ -2,7 +2,6 @@
 output file naming and writing
 """
 import numpy as np
-import os
 import rustfits
 from .defaults import MIN_GOOD_FRAC
 

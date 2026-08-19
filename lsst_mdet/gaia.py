@@ -11,7 +11,14 @@ GAIA_EPOCH = 2016.0
 OBS_EPOCH = 2025.0
 GMAX = 19.0         # download depth
 
-GAIA_TAP = 'https://gea.esac.esa.int/tap-server/tap/sync'
+# TAP sync endpoints serving gaiadr3.gaia_source with the same
+# query dialect and csv output; tried in order.  ESA is the
+# canonical archive, ARI Heidelberg a full mirror (ESA has been
+# observed to reset connections during outages)
+GAIA_TAP_URLS = [
+    'https://gea.esac.esa.int/tap-server/tap/sync',
+    'https://gaia.ari.uni-heidelberg.de/tap/sync',
+]
 
 GAIA_ADQL = (
     'SELECT source_id, ra, dec, pmra, pmdec, parallax, '
@@ -55,13 +62,28 @@ def fetch_gaia(wcs, bbox, gmax=GMAX):
         'FORMAT': 'csv',
         'QUERY': query,
     }).encode()
-    with urllib.request.urlopen(
-        GAIA_TAP, data=data, timeout=120,
-    ) as resp:
-        text = resp.read().decode()
-    if not text.startswith('source_id'):
+
+    text = None
+    errors = []
+    for url in GAIA_TAP_URLS:
+        try:
+            with urllib.request.urlopen(
+                url, data=data, timeout=120,
+            ) as resp:
+                text = resp.read().decode()
+            if not text.startswith('source_id'):
+                raise RuntimeError(
+                    'unexpected TAP response: ' + text[:200],
+                )
+            break
+        except Exception as err:
+            print(f'    gaia query failed at {url}: {err}')
+            errors.append(f'{url}: {err}')
+            text = None
+    if text is None:
         raise RuntimeError(
-            'unexpected TAP response: ' + text[:200],
+            'all gaia TAP services failed:\n    '
+            + '\n    '.join(errors)
         )
     gaia = np.genfromtxt(
         io.StringIO(text), delimiter=',', names=True,
