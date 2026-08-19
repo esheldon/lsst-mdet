@@ -4,24 +4,14 @@ Gaia DR3 download and coordinate handling
 import numpy as np
 
 
-# Gaia-driven bright-star subtraction and masking.  Every clean
-# Gaia star down to GSUB is subtracted with an empirical
-# extended template (its wings are the faint-star carpet that
-# biases the background) and masked with a floored circle that
-# hides the core, where a field-average template is wrong.
-# Circles follow the flagged-arm extent law measured over 58
-# stars in 4 fields
+# Gaia positions are queried at the catalog epoch and
+# propagated by proper motion to the approximate observation
+# epoch
 GAIA_EPOCH = 2016.0
-
-
 OBS_EPOCH = 2025.0
-
-
 GMAX = 19.0         # download depth
 
-
 GAIA_TAP = 'https://gea.esac.esa.int/tap-server/tap/sync'
-
 
 GAIA_ADQL = (
     'SELECT source_id, ra, dec, pmra, pmdec, parallax, '

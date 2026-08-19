@@ -11,16 +11,9 @@ from .detect import get_sx_config, make_kernel
 # docs/detection-adaptive-null), the mutual dedupe radius, and
 # the number of noise realizations for the per-field threshold
 # calibration
-
 S2_JSCALE = 1
-
-
 S2_EXTRA_MIN_SEP = 4.0
-
-
 S2_EXTRA_DUP = 1.5
-
-
 S2_NREAL = 20
 
 

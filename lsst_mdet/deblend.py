@@ -9,12 +9,8 @@ from .defaults import (
     ZERO_WEIGHTS,
 )
 
-
 R_DUP_FIT = 1.5
-
-
 GROUP_BOX_PAD = 10
-
 
 # with maxiter_type 'scaled', the sweep cap applies as configured
 # up to this group size and is scaled up linearly with the member
@@ -26,139 +22,7 @@ GROUP_BOX_PAD = 10
 # cluster core needs 1034).  'fixed' is right for wide fields,
 # where the long-running groups are almost all non-converging
 # limit cycles and the scaled caps only multiply their cost
-
 MAXITER_SIZE_REF = 8.0
-
-
-def pack_deblend_object(st, obj_res, bands, jacobian):
-    """
-    flags, deblend_flags, numiter set outside
-    """
-
-    g1, g2, g1_err, g2_err = _e2g(
-        e1=obj_res['e1'],
-        e2=obj_res['e2'],
-        e1_err=obj_res['e1_err'],
-        e2_err=obj_res['e2_err'],
-    )
-
-    st['g1'] = g1
-    st['g1_err'] = g1_err
-    st['g2'] = g2
-    st['g2_err'] = g2_err
-    st['T'] = obj_res['T']
-    st['T_err'] = obj_res['T_err']
-
-    _set_fluxes(
-        st=st,
-        bands=bands,
-        flux=obj_res['flux'],
-        flux_err=obj_res['flux_err'],
-    )
-
-    _set_colors(
-        st=st,
-        bands=bands,
-        flux=obj_res['flux'],
-        flux_err=obj_res['flux_err'],
-        flux_cov=obj_res['flux_cov'],
-    )
-
-    st['s2n'] = obj_res['s2n']
-    row, col = jacobian.get_rowcol(obj_res['cen'][0], obj_res['cen'][1])
-    st['x_fit'] = col
-    st['y_fit'] = row
-
-
-def _e2g(e1, e2, e1_err, e2_err):
-    """
-    convert distortion-convention shapes to reduced shear,
-    g = e / (1 + sqrt(1 - e^2)), with diagonal error propagation.
-    The deblender guarantees e^2 < 1 for usable shapes (the det
-    condition); the clip only guards float rounding at the boundary
-    """
-    import numpy as np
-
-    if np.isfinite(e1) and np.isfinite(e2):
-        u = e1 * e1 + e2 * e2
-        s = np.sqrt(max(1.0 - u, 0.0))
-        f = 1.0 / (1.0 + s)
-        g1 = e1 * f
-        g2 = e2 * f
-
-        # dg_i/de_j = f delta_ij + 2 e_i e_j f'; f' = df/d(e^2)
-        if s > 0:
-            fp = 1.0 / (2 * s * (1.0 + s) ** 2)
-        else:
-            fp = 0.0
-        g1_err = np.sqrt(
-            (f + 2 * e1 * e1 * fp) ** 2 * e1_err ** 2
-            + (2 * e1 * e2 * fp) ** 2 * e2_err ** 2
-        )
-        g2_err = np.sqrt(
-            (2 * e1 * e2 * fp) ** 2 * e1_err ** 2
-            + (f + 2 * e2 * e2 * fp) ** 2 * e2_err ** 2
-        )
-    else:
-        g1, g2, g1_err, g2_err = [np.nan] * 4
-
-    return g1, g2, g1_err, g2_err
-
-
-def _set_fluxes(st, bands, flux, flux_err):
-    """
-    fill the flux_{band} and flux_err_{band} columns; the fitters
-    return a scalar for a single band and an array for multiple
-    """
-    import numpy as np
-
-    flux = np.atleast_1d(flux)
-    flux_err = np.atleast_1d(flux_err)
-    if flux.size != len(bands):
-        raise ValueError(
-            f'got {flux.size} fluxes for {len(bands)} bands'
-        )
-    for iband, band in enumerate(bands):
-        st[f'flux_{band}'] = flux[iband]
-        st[f'flux_err_{band}'] = flux_err[iband]
-
-
-def _set_colors(st, bands, flux, flux_err, flux_cov):
-    """
-    Set colors and errors based on the full covariance
-    """
-    fac = 2.5 / np.log(10)
-    eps = 1.0e-7
-
-    nband = len(bands)
-
-    if flux_cov is None:
-        flux_cov = np.diag(flux_err ** 2)
-
-    for i in range(nband - 1):
-        first_band = bands[i]
-        second_band = bands[i + 1]
-        cname = f'{first_band}m{second_band}'
-
-        if flux[i] > eps and flux[i + 1] > eps:
-            color = -2.5 * np.log10(flux[i] / flux[i + 1])
-
-            color_var = fac ** 2 * (
-                flux_cov[i, i] / flux[i] ** 2
-                + flux_cov[i + 1, i + 1] / flux[i + 1] ** 2
-                - 2 * flux_cov[i, i + 1] / (flux[i] * flux[i + 1])
-            )
-
-            st[cname] = color
-            st[f'{cname}_err'] = np.sqrt(color_var)
-
-    # this bootstraps the process, first fitting psfs then the object
-    # boot = ngmix.bootstrap.Bootstrapper(
-    #     runner=runner,
-    #     # psf_runner=psf_runner,
-    #     # ignore_failed_psf=False,
-    # )
-    # return boot
 
 
 def fit_deblend(
@@ -322,16 +186,11 @@ def fit_deblend(
                 off_seg.append(nsx + k)
 
     cat['extra_det'][nsx:] = True
+
     # extras have no sep flux_auto and keep the nan init
-    # cat['s2n_det'][:nsx] = s2n_det
     for idx in off_seg:
         cat['flags'][idx] = FLAG_EXTRA_DET_OFF_SEG
-    # cat['psf_flags'] = psf_res['flags']
-    # if psf_res['flags'] == 0:
-    #     cat['psf_T'] = psf_res['T']
 
-    # pass 1: fit each group with no knowledge of the rest of the
-    # field
     for gid, group in enumerate(groups):
 
         cat['group_size'][group] = len(group)
@@ -401,11 +260,6 @@ def fit_deblend(
             )
             if d2 < R_DUP_FIT ** 2:
                 cat['flags'][i] |= FLAG_DUPLICATE_EXTRA
-
-    # cat['xcell'] = sxcat['x']
-    # cat['ycell'] = sxcat['y']
-    # _set_mcal_psfs(st=cat, psf_res=psf_res)
-    # return cat
 
 
 def fit_one_group(
@@ -489,6 +343,129 @@ def fit_one_group(
         'gbox': box,
     }
     return res, gextra
+
+
+def pack_deblend_object(st, obj_res, bands, jacobian):
+    """
+    flags, deblend_flags, numiter set outside
+    """
+
+    g1, g2, g1_err, g2_err = _e2g(
+        e1=obj_res['e1'],
+        e2=obj_res['e2'],
+        e1_err=obj_res['e1_err'],
+        e2_err=obj_res['e2_err'],
+    )
+
+    st['g1'] = g1
+    st['g1_err'] = g1_err
+    st['g2'] = g2
+    st['g2_err'] = g2_err
+    st['T'] = obj_res['T']
+    st['T_err'] = obj_res['T_err']
+
+    _set_fluxes(
+        st=st,
+        bands=bands,
+        flux=obj_res['flux'],
+        flux_err=obj_res['flux_err'],
+    )
+
+    _set_colors(
+        st=st,
+        bands=bands,
+        flux=obj_res['flux'],
+        flux_err=obj_res['flux_err'],
+        flux_cov=obj_res['flux_cov'],
+    )
+
+    st['s2n'] = obj_res['s2n']
+    row, col = jacobian.get_rowcol(obj_res['cen'][0], obj_res['cen'][1])
+    st['x_fit'] = col
+    st['y_fit'] = row
+
+
+def _e2g(e1, e2, e1_err, e2_err):
+    """
+    convert distortion-convention shapes to reduced shear,
+    g = e / (1 + sqrt(1 - e^2)), with diagonal error propagation.
+    The deblender guarantees e^2 < 1 for usable shapes (the det
+    condition); the clip only guards float rounding at the boundary
+    """
+    import numpy as np
+
+    if np.isfinite(e1) and np.isfinite(e2):
+        u = e1 * e1 + e2 * e2
+        s = np.sqrt(max(1.0 - u, 0.0))
+        f = 1.0 / (1.0 + s)
+        g1 = e1 * f
+        g2 = e2 * f
+
+        # dg_i/de_j = f delta_ij + 2 e_i e_j f'; f' = df/d(e^2)
+        if s > 0:
+            fp = 1.0 / (2 * s * (1.0 + s) ** 2)
+        else:
+            fp = 0.0
+        g1_err = np.sqrt(
+            (f + 2 * e1 * e1 * fp) ** 2 * e1_err ** 2
+            + (2 * e1 * e2 * fp) ** 2 * e2_err ** 2
+        )
+        g2_err = np.sqrt(
+            (2 * e1 * e2 * fp) ** 2 * e1_err ** 2
+            + (f + 2 * e2 * e2 * fp) ** 2 * e2_err ** 2
+        )
+    else:
+        g1, g2, g1_err, g2_err = [np.nan] * 4
+
+    return g1, g2, g1_err, g2_err
+
+
+def _set_fluxes(st, bands, flux, flux_err):
+    """
+    fill the flux_{band} and flux_err_{band} columns; the fitters
+    return a scalar for a single band and an array for multiple
+    """
+    import numpy as np
+
+    flux = np.atleast_1d(flux)
+    flux_err = np.atleast_1d(flux_err)
+    if flux.size != len(bands):
+        raise ValueError(
+            f'got {flux.size} fluxes for {len(bands)} bands'
+        )
+    for iband, band in enumerate(bands):
+        st[f'flux_{band}'] = flux[iband]
+        st[f'flux_err_{band}'] = flux_err[iband]
+
+
+def _set_colors(st, bands, flux, flux_err, flux_cov):
+    """
+    Set colors and errors based on the full covariance
+    """
+    fac = 2.5 / np.log(10)
+    eps = 1.0e-7
+
+    nband = len(bands)
+
+    if flux_cov is None:
+        flux_cov = np.diag(flux_err ** 2)
+
+    for i in range(nband - 1):
+        first_band = bands[i]
+        second_band = bands[i + 1]
+        cname = f'{first_band}m{second_band}'
+
+        if flux[i] > eps and flux[i + 1] > eps:
+            color = -2.5 * np.log10(flux[i] / flux[i + 1])
+
+            color_var = fac ** 2 * (
+                flux_cov[i, i] / flux[i] ** 2
+                + flux_cov[i + 1, i + 1] / flux[i + 1] ** 2
+                - 2 * flux_cov[i, i + 1] / (flux[i] * flux[i + 1])
+            )
+
+            st[cname] = color
+            st[f'{cname}_err'] = np.sqrt(color_var)
 
 
 def show_group(
