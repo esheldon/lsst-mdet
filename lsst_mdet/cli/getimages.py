@@ -6,6 +6,7 @@ from lsst.images._geom import BoundsError
 import numpy as np
 import os
 import rustfits
+from ..apodize import taper_from_distance
 from ..background import redo_background
 from ..cells import get_cell_centers
 from ..defaults import SKYMAP_VERS
@@ -48,7 +49,7 @@ def main():
         '--apod-stars', action=argparse.BooleanOptionalAction,
         default=True,
         help='zero the star-mask regions in the image and '
-             'noise planes with a cosine taper: hard-edged '
+             'noise planes with a smooth taper: hard-edged '
              'holes and raw saturated cores ring in k-space',
     )
     args = parser.parse_args()
@@ -156,9 +157,9 @@ def main():
             taper_applied = False
             if args.starsub and args.apod_stars \
                     and dstar is not None:
-                taper = 0.5 - 0.5 * np.cos(np.pi * np.clip(
-                    dstar / APOD_STARS, 0.0, 1.0,
-                ))
+                taper = taper_from_distance(
+                    dstar, APOD_STARS,
+                )
                 deep_coadd.image.array[:, :] *= taper
                 nz = deep_coadd.noise_realizations[0].array
                 nz[:, :] *= taper

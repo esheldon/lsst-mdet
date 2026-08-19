@@ -1,0 +1,18 @@
+Add a group_id
+--------------
+This would allow group-based selections
+
+for deblending should be the fof group id
+for ML this should be the sextractor id
+
+Add Tfrac
+----------
+This requires upstream support, keeping psf_T maps
+
+anull detections
+----------------
+just needs to be copied in
+
+possibly support gaia stars from Xiangchong's files
+---------------------------------------------------
+sending a file path would override the query

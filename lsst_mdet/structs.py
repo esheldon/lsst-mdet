@@ -26,7 +26,9 @@ def get_struct(bands, n=1):
         ('extra_det', bool),
         ('is_primary', bool),
         ('numiter', 'i2'),
+        ('obj_id', 'i4'),
         ('group_size', 'i2'),
+        ('group_id', 'i4'),
         ('deblend_flags', 'i4'),
         ('mfrac', 'f4'),
 
@@ -118,6 +120,12 @@ def _init_struct(dtype, n):
             'numiter', 'group_size', 'cell_i', 'cell_j',
         ):
             output[name] = 0
+        elif name == 'obj_id':
+            output[name] = np.arange(n)
+        elif name == 'group_id':
+            # ml-branch rows keep group_id == obj_id; the
+            # deblender overwrites with the blend-group id
+            output[name] = np.arange(n)
         else:
             output[name] = np.nan
 

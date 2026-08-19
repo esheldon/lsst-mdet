@@ -3,6 +3,7 @@ Gaia-driven bright-star subtraction and masking
 """
 import numpy as np
 from .defaults import DM_INTRP, DM_OUT, DM_SAT
+from .apodize import taper_from_distance
 from .gaia import gaia_pixel_positions
 
 # every census star is subtracted with the empirical extended
@@ -19,7 +20,7 @@ GSAT = 15.2         # G saturation threshold of these coadds
 GSUB = 19.0         # subtract stars brighter than this
 RUWE_MAX = 1.4      # template-star astrometric-quality guard
 BG_GROW = 12        # extra star-mask margin for the background
-APOD_STARS = 12.0   # cosine taper width outside the star mask
+APOD_STARS = 12.0   # taper width outside the star mask
 
 # empirical extended star template
 TMPL_HALF = 50       # measured stamp half size
@@ -58,9 +59,7 @@ def subtract_and_mask_stars(deep_coadd, wcs, gaia):
         mask0, gaia, x, y, stars, comps,
     )
     d = ndimage.distance_transform_edt(~starmask)
-    taper = 0.5 - 0.5 * np.cos(np.pi * np.clip(
-        d / APOD_STARS, 0.0, 1.0,
-    ))
+    taper = taper_from_distance(d, APOD_STARS)
     deep_coadd.image.array[:, :] *= taper
     deep_coadd.noise_realizations[0].array[:, :] *= taper
     return d < APOD_STARS

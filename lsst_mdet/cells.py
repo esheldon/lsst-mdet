@@ -11,37 +11,26 @@ from .structs import get_cell_info
 from .wcs import get_cell_jacobian
 
 
-def make_cell_obs(image, var, good, noise, mfrac, psf_image, jacobian):
-    import ngmix
-
-    psf_jacobian = jacobian.copy()
-    psf_cen = (np.array(psf_image.shape) - 1.0) / 2.0
-    psf_jacobian.set_cen(row=psf_cen[0], col=psf_cen[1])
-
-    psf_obs = ngmix.Observation(
-        psf_image,
-        weight=psf_image * 0 + 1.0 / 1.0e-6 ** 2,
-        jacobian=psf_jacobian,
-    )
-
-    weight = np.zeros(image.shape)
-    weight[good] = 1.0 / var[good]
-
-    bmask = np.zeros(image.shape, dtype='i4')
-    bmask[~good] = 1
-
-    return ngmix.Observation(
-        image,
-        weight=weight,
-        bmask=bmask,
-        noise=noise,
-        mfrac=mfrac,
-        jacobian=jacobian,
-        psf=psf_obs,
-    )
-
-
 def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
+    """
+    pull a MultiBandObsList from the input deep_coadds for the indicated cell.
+
+    Parameters
+    ----------
+    deep_coadds: list
+        list of deep_coadd
+    cell_i, cell_j: int
+        The cell indices
+    wcs: DM wcs object
+        wcs used for jacobian
+    starmask: bool, optional
+
+    Returns
+    -------
+    mbobs, cell_info:
+        The MultiBandObsList and a cell info struct (see structs.py)
+    """
+
     import ngmix
 
     nband = len(deep_coadds)
@@ -64,17 +53,19 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
 
         good = np.isfinite(var) & (mask & DM_OUT == 0)
 
+        smcut = None
         if starmask is not None:
             # the star attenuation zone (patch-frame array)
             # carries no usable signal after subtraction and
             # apodization
             pb = deep_coadd.bbox
-            good &= ~starmask[
+            smcut = starmask[
                 bbox.y.start - pb.y.start:
                 bbox.y.stop - pb.y.start,
                 bbox.x.start - pb.x.start:
                 bbox.x.stop - pb.x.start,
             ]
+            good &= ~smcut
 
         w = np.where(good)
         good_frac = w[0].size / var.size
@@ -84,6 +75,11 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
 
             noise = deep_coadd.noise_realizations[0][bbox].array.copy()
             mfrac = deep_coadd.mask_fractions["rejected"][bbox].array.copy()
+            if smcut is not None:
+                # the star zone is fully masked for selection
+                # purposes, matching the cell-edge apodization
+                # convention
+                mfrac[smcut] = 1.0
             image = deep_coadd.image[bbox].array.copy()
 
             psf = deep_coadd.psf
@@ -103,7 +99,7 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
             cell_jacobian = get_cell_jacobian(
                 wcs=wcs, bbox=bbox, x=xmid, y=ymid,
             )
-            obs = make_cell_obs(
+            obs = _make_cell_obs(
                 image=image,
                 var=var,
                 good=good,
@@ -171,6 +167,36 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
     else:
         cell_info['kept'] = True
         return mbobs, cell_info
+
+
+def _make_cell_obs(image, var, good, noise, mfrac, psf_image, jacobian):
+    import ngmix
+
+    psf_jacobian = jacobian.copy()
+    psf_cen = (np.array(psf_image.shape) - 1.0) / 2.0
+    psf_jacobian.set_cen(row=psf_cen[0], col=psf_cen[1])
+
+    psf_obs = ngmix.Observation(
+        psf_image,
+        weight=psf_image * 0 + 1.0 / 1.0e-6 ** 2,
+        jacobian=psf_jacobian,
+    )
+
+    weight = np.zeros(image.shape)
+    weight[good] = 1.0 / var[good]
+
+    bmask = np.zeros(image.shape, dtype='i4')
+    bmask[~good] = 1
+
+    return ngmix.Observation(
+        image,
+        weight=weight,
+        bmask=bmask,
+        noise=noise,
+        mfrac=mfrac,
+        jacobian=jacobian,
+        psf=psf_obs,
+    )
 
 
 def get_cell_centers(deep_coadd):

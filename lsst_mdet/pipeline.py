@@ -8,6 +8,7 @@ from .detect import run_sep
 from .extra_detect import get_s2_extra_detections
 from .maxlike import do_single_fits
 from .metacal import do_all_metacal
+from .mfrac import sample_mfrac, smooth_mfrac_map
 from .psf import _set_mcal_psfs, fit_and_set_mcal_psfs
 from .structs import get_struct
 from .util import get_primary
@@ -120,6 +121,14 @@ def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):
         cat['ycell'] = sxcat['y']
 
         cat['flags'] = PSF_FAILURE
+
+    # one mfrac for every row (sep, deblend groups, extras)
+    # from the smoothed map: equivalent to the per-stamp
+    # gaussian-weighted mean, at one convolution per cell
+    mfrac_map = smooth_mfrac_map(mbobs)
+    cat['mfrac'] = sample_mfrac(
+        mfrac_map, cat['xcell'], cat['ycell'],
+    )
 
     cat['is_primary'] = get_primary(cat['xcell'], cat['ycell'])
     return cat

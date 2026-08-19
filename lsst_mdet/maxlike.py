@@ -1,9 +1,8 @@
 """
 maximum-likelihood-only object measurement
 """
-from .deblend import _set_colors, _set_fluxes
+from .colors_and_fluxes import set_colors, set_fluxes
 from .defaults import BAD_BBOX, ZERO_WEIGHTS
-from .mfrac import MFRAC_FWHM, calculate_mfrac
 from .util import get_stamp
 
 
@@ -31,13 +30,7 @@ def do_single_fits(mbobs, sxcat, cat, model, rng):
         Which rows of sxcat were kept; stamps hitting an edge are
         dropped
     """
-    import ngmix
     from ngmix import GMixFatalError
-
-    mfrac_weight = ngmix.GMixModel(
-        [0, 0, 0, 0, ngmix.moments.fwhm_to_T(MFRAC_FWHM), 1],
-        'gauss',
-    )
 
     for i in range(sxcat.size):
 
@@ -52,11 +45,6 @@ def do_single_fits(mbobs, sxcat, cat, model, rng):
                 model=model,
                 rng=rng,
                 mbobs=stamp_mbobs,
-            )
-
-            cat['mfrac'][i] = calculate_mfrac(
-                mbobs=stamp_mbobs,
-                mfrac_weight=mfrac_weight,
             )
 
         except IndexError as err:
@@ -115,13 +103,13 @@ def fit_ml(st, model, rng, mbobs):
         st['g2_err'] = res['g_err'][1]
         st['T'] = res['T']
         st['T_err'] = res['T_err']
-        _set_fluxes(
+        set_fluxes(
             st=st,
             bands=bands,
             flux=res['flux'],
             flux_err=res['flux_err'],
         )
-        _set_colors(
+        set_colors(
             st=st,
             bands=bands,
             flux=res['flux'],

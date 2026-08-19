@@ -70,18 +70,34 @@ def get_ap_range():
     """
     Get the range over which the the apodization kernel drops to zero
 
-        int(6*ap_rad + 0.5)
-
-    Parameters
-    ----------
-    ap_rad: float
-        The apodization radius over which the kernel goes to zero
+        int(6*AP_RAD + 0.5)
 
     Returns
     -------
     ap range as an integer
     """
     return int(6 * AP_RAD + 0.5)
+
+
+def taper_from_distance(dist, width):
+    """
+    smooth taper as a function of distance into valid territory:
+    0 at dist=0, 1 at dist >= width, using the same cumulative
+    triweight kernel as the cell-edge apodization so star masks
+    and cell edges share one smoothness class
+    """
+    y = (np.asarray(dist, dtype=float) - width) * (6.0 / width) + 3
+    out = np.where(y > 3, 1.0, 0.0)
+    w = (y >= -3) & (y <= 3)
+    yy = y[w]
+    out[w] = (
+        -5 * yy ** 7 / 69984
+        + 7 * yy ** 5 / 2592
+        - 35 * yy ** 3 / 864
+        + 35 * yy / 96
+        + 1 / 2
+    )
+    return out
 
 
 @njit
