@@ -25,46 +25,13 @@ from ..patchfiles import get_patch_filename
 
 
 def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--tract', type=int, required=True)
-    parser.add_argument('--patch', type=int, required=True)
-    parser.add_argument(
-        '--starsub', action=argparse.BooleanOptionalAction,
-        default=False,
-        help='subtract the Gaia stars (empirical extended '
-             'template) before any background determination',
-    )
-    parser.add_argument(
-        '--redo-bg', action=argparse.BooleanOptionalAction,
-        default=True,
-        help='redo the background determination (after star '
-             'subtraction when --starsub is on)',
-    )
-    parser.add_argument(
-        '--gsub', type=float, default=GSUB,
-        help='subtract and mask Gaia stars brighter than '
-             'this; the download depth follows it',
-    )
-    parser.add_argument(
-        '--apod-stars', action=argparse.BooleanOptionalAction,
-        default=True,
-        help='zero the star-mask regions in the image and '
-             'noise planes with a smooth taper: hard-edged '
-             'holes and raw saturated cores ring in k-space',
-    )
-    args = parser.parse_args()
+    args = get_args()
 
     tract = args.tract
     patch = args.patch
-    print(tract)
-    print(patch)
 
-    odir = f'{tract}-images'
-    if args.starsub:
-        odir += '-starsub'
-    if args.redo_bg:
-        odir += '-redo-bg'
+    if not os.path.exists(args.patch_dir):
+        os.makedirs(args.patch_dir, exist_ok=True)
 
     # this will change
     butler = Butler('dp2_prep_future', collections=["LSSTCam/runs/DRP/DP2"])
@@ -74,14 +41,13 @@ def main():
 
     gaia = None
     for band in ['g', 'r', 'i', 'z']:
-        if not os.path.exists(odir):
-            os.makedirs(odir)
 
         fname = get_patch_filename(
-            tract=tract, patch=patch, band=band, patch_dir=odir,
+            tract=tract, patch=patch, band=band, patch_dir=args.patch_dir,
         )
 
         if os.path.exists(fname):
+            print(f'{fname} already exists')
             continue
 
         data_id = {
@@ -313,6 +279,39 @@ def main():
                     header={'GSUB': args.gsub,
                             'MINRAD': MINRAD},
                 )
+
+
+def get_args():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--tract', type=int, required=True)
+    parser.add_argument('--patch', type=int, required=True)
+    parser.add_argument('--patch-dir', required=True)
+    parser.add_argument(
+        '--starsub', action=argparse.BooleanOptionalAction,
+        default=False,
+        help='subtract the Gaia stars (empirical extended '
+             'template) before any background determination',
+    )
+    parser.add_argument(
+        '--redo-bg', action=argparse.BooleanOptionalAction,
+        default=True,
+        help='redo the background determination (after star '
+             'subtraction when --starsub is on)',
+    )
+    parser.add_argument(
+        '--gsub', type=float, default=GSUB,
+        help='subtract and mask Gaia stars brighter than '
+             'this; the download depth follows it',
+    )
+    parser.add_argument(
+        '--apod-stars', action=argparse.BooleanOptionalAction,
+        default=True,
+        help='zero the star-mask regions in the image and '
+             'noise planes with a smooth taper: hard-edged '
+             'holes and raw saturated cores ring in k-space',
+    )
+    return parser.parse_args()
 
 
 if __name__ == '__main__':

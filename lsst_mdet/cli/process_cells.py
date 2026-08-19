@@ -6,7 +6,7 @@ import os
 from ..apodize import apodize_mbobs
 from ..cells import load_coadds_butler, pull_mbobs
 from ..patchfiles import load_coadds_files
-from ..io import get_dir, get_fname, write_output
+from ..io import write_output
 from ..pipeline import do_metacal_and_process, process_one_mbobs
 from ..psf import fit_and_set_psfrec
 from ..wcs import calculate_positions
@@ -64,12 +64,6 @@ def main(
     dlist = []
 
     bands = ['r', 'i', 'z']
-    fname = get_fname(tract=tract, patch=patch, with_mdet=with_mdet)
-    dir = get_dir(tract)
-    if not os.path.exists(dir):
-        os.makedirs(dir, exist_ok=True)
-
-    print(fname)
 
     if patch_dir is not None:
         if redo_bg or starsub:

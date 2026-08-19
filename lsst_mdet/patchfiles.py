@@ -58,10 +58,13 @@ def get_patch_filename(tract, patch, band, patch_dir=None):
     filename
     """
     import os
+
     fname = f'{tract:05d}-{patch:02d}-{band}.fits'
+
     if patch_dir is not None:
         fname = os.path.join(patch_dir, fname)
-    return patch_dir
+
+    return fname
 
 
 class SimpleAxis(object):

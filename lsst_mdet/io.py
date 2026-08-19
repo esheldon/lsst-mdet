@@ -7,21 +7,6 @@ import rustfits
 from .defaults import MIN_GOOD_FRAC
 
 
-def get_dir(tract):
-    return f'{tract:05d}'
-
-
-def get_fname(tract, patch, with_mdet):
-
-    fl = [f'cat-{tract:05d}-{patch:02d}']
-    if with_mdet:
-        fl += ['metacal']
-
-    dir = get_dir(tract)
-    bname = '-'.join(fl) + '.fits'
-    return os.path.join(dir, bname)
-
-
 def write_output(
     fname,
     st,

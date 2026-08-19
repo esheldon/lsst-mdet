@@ -48,6 +48,7 @@ def fetch_gaia(wcs, bbox, gmax=GMAX):
         rad=rad,
         gmax=gmax,
     )
+    print(query)
     data = urllib.parse.urlencode({
         'REQUEST': 'doQuery',
         'LANG': 'ADQL',
