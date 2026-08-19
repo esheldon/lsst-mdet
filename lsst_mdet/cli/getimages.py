@@ -258,6 +258,13 @@ def main():
                 extname='noise',
                 compress='gzip_2',
             )
+            # masked-fraction plane, needed for butler-free
+            # processing (process_cells --patch-dir)
+            fits.write_image(
+                deep_coadd.mask_fractions['rejected'].array,
+                extname='mfrac',
+                compress='gzip_2',
+            )
             # (ncell, ny, nx) psf stamps, row k matching row k of
             # the psf_cells table; cell centers are patch-frame
             # pixel coordinates

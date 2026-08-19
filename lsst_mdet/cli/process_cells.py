@@ -1,18 +1,14 @@
 """
 cli/process_cells
 """
-from lsst.daf.butler import Butler
 import numpy as np
 import os
 from ..apodize import apodize_mbobs
-from ..background import redo_background
-from ..cells import pull_mbobs
-from ..defaults import SKYMAP_VERS
-from ..gaia import fetch_gaia
+from ..cells import load_coadds_butler, pull_mbobs
+from ..patchfiles import load_coadds_files
 from ..io import get_dir, get_fname, write_output
 from ..pipeline import do_metacal_and_process, process_one_mbobs
 from ..psf import fit_and_set_psfrec
-from ..starsub import subtract_and_mask_stars
 from ..wcs import calculate_positions
 
 
@@ -24,6 +20,13 @@ def get_args():
     parser.add_argument('--model', required=True)
     parser.add_argument('--seed', type=int, required=True)
     parser.add_argument('--outfile', required=True)
+    parser.add_argument(
+        '--patch-dir',
+        help='process from getimages FITS output instead of '
+             'the butler (no LSST stack needed); --redo-bg '
+             'and --starsub are refused in this mode, they '
+             'are getimages-time operations',
+    )
     parser.add_argument('--deblend', action='store_true')
     parser.add_argument('--s2-detect', action='store_true')
     parser.add_argument('--redo-bg', action='store_true')
@@ -47,6 +50,7 @@ def main(
     with_mdet,
     redo_bg,
     starsub,
+    patch_dir,
     outfile,
     deblend,
     s2_detect,
@@ -56,11 +60,6 @@ def main(
     from tqdm import trange
 
     rng = np.random.RandomState(seed)
-
-    butler = Butler('dp2_prep_future', collections=["LSSTCam/runs/DRP/DP2"])
-    skymap = butler.get("skyMap", skymap=SKYMAP_VERS)
-    tract_info = skymap[tract]
-    wcs = tract_info.wcs
 
     dlist = []
 
@@ -72,38 +71,28 @@ def main(
 
     print(fname)
 
-    deep_coadds = []
-    gaia = None
-    starmasks = []
-    for band in bands:
-        data_id = {
-            "band": band,
-            "skymap": SKYMAP_VERS,
-            "tract": tract,
-            "patch": patch,
-        }
-        print(data_id)
-        deep_coadd = butler.get('deep_coadd', dataId=data_id)
-        # deep_coadd.apply_background(None)
-        deep_coadd.apply_background('object')
-        if starsub:
-            if gaia is None:
-                gaia = fetch_gaia(wcs, deep_coadd.bbox)
-            starmasks.append(subtract_and_mask_stars(
-                deep_coadd, wcs, gaia,
-            ))
-        if redo_bg:
-            redo_background(
-                deep_coadd,
-                starmask=starmasks[-1] if starsub else None,
+    if patch_dir is not None:
+        if redo_bg or starsub:
+            raise ValueError(
+                '--redo-bg and --starsub are getimages-time '
+                'operations; the patch files already carry '
+                'their effects'
             )
-        deep_coadds.append(deep_coadd)
+        deep_coadds, wcs, starmask = load_coadds_files(
+            patch_dir=patch_dir, tract=tract, patch=patch,
+            bands=bands,
+        )
+    else:
+        from lsst.daf.butler import Butler
 
-    # one mask for all bands: consistent footprints downstream
-    starmask = None
-    if starsub:
-        starmask = np.logical_or.reduce(starmasks)
-        print(f'union star mask fraction {starmask.mean():.3f}')
+        butler = Butler(
+            'dp2_prep_future',
+            collections=["LSSTCam/runs/DRP/DP2"],
+        )
+        deep_coadds, wcs, starmask = load_coadds_butler(
+            butler=butler, tract=tract, patch=patch,
+            bands=bands, redo_bg=redo_bg, starsub=starsub,
+        )
 
     if progress:
         mrng_i = trange(1, 21, desc='cell_i', ncols=80, ascii=True)
@@ -208,6 +197,7 @@ def main_cli():
         s2_detect=_args.s2_detect,
         redo_bg=_args.redo_bg,
         starsub=_args.starsub,
+        patch_dir=_args.patch_dir,
         outfile=_args.outfile,
         progress=_args.progress,
         show=_args.show,

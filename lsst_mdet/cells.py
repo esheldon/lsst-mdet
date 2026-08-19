@@ -1,9 +1,6 @@
 """
 mbobs construction from butler cell coadds
 """
-from lsst.images import Box
-from lsst.images._cell_grid import CellIJ
-from lsst.images._geom import BoundsError
 import numpy as np
 from .defaults import CELL_SIZE, DM_OUT, MIN_GOOD_FRAC, OVERLAP
 from .detect import get_detect_noise, make_kernel
@@ -18,7 +15,7 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
     Parameters
     ----------
     deep_coadds: list
-        list of deep_coadd
+        list of ButlerCoadd or patchfiles.FilePatchCoadd
     cell_i, cell_j: int
         The cell indices
     wcs: DM wcs object
@@ -41,12 +38,7 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
     mbobs = ngmix.MultiBandObsList()
 
     for iband, deep_coadd in enumerate(deep_coadds):
-        bbox0 = deep_coadd.grid.bbox_of(CellIJ(cell_i, cell_j))
-
-        bbox = Box.factory[
-            bbox0.y.start - OVERLAP: bbox0.y.stop + OVERLAP,
-            bbox0.x.start - OVERLAP: bbox0.x.stop + OVERLAP,
-        ]
+        bbox = deep_coadd.cell_window(cell_i, cell_j, OVERLAP)
 
         var = deep_coadd.variance[bbox].array.copy()
         mask = deep_coadd.mask[bbox].array[:, :, 0]
@@ -82,18 +74,11 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
                 mfrac[smcut] = 1.0
             image = deep_coadd.image[bbox].array.copy()
 
-            psf = deep_coadd.psf
-
             xmid = 0.5 * (bbox.x.start + bbox.x.stop)
             ymid = 0.5 * (bbox.y.start + bbox.y.stop)
 
-            try:
-                psf_image = psf.compute_kernel_image(
-                    x=xmid,
-                    y=ymid,
-                ).array
-            except BoundsError as err:
-                print(err)
+            psf_image = deep_coadd.psf_image(xmid, ymid)
+            if psf_image is None:
                 break
 
             cell_jacobian = get_cell_jacobian(
@@ -265,3 +250,93 @@ def get_cell_centers(deep_coadd):
     xs = np.arange(bbox.x.start + csx / 2 - 0.5, bbox.x.stop, csx)
     ys = np.arange(bbox.y.start + csy / 2 - 0.5, bbox.y.stop, csy)
     return xs, ys, (csx, csy), f'fallback {CELL_SIZE}px grid'
+
+
+class ButlerCoadd(object):
+    """
+    thin wrapper around a butler deep_coadd presenting the
+    interface pull_mbobs uses; everything not defined here
+    passes through to the underlying object.  The stack
+    imports live inside the methods so this module imports
+    without the LSST pipelines
+    """
+
+    def __init__(self, deep_coadd):
+        self._dc = deep_coadd
+
+    def __getattr__(self, name):
+        return getattr(self._dc, name)
+
+    def cell_window(self, cell_i, cell_j, overlap):
+        from lsst.images import Box
+        from lsst.images._cell_grid import CellIJ
+
+        b0 = self._dc.grid.bbox_of(CellIJ(cell_i, cell_j))
+        return Box.factory[
+            b0.y.start - overlap: b0.y.stop + overlap,
+            b0.x.start - overlap: b0.x.stop + overlap,
+        ]
+
+    def psf_image(self, x, y):
+        from lsst.images._geom import BoundsError
+
+        try:
+            return self._dc.psf.compute_kernel_image(
+                x=x, y=y,
+            ).array
+        except BoundsError as err:
+            print(err)
+            return None
+
+
+def load_coadds_butler(butler, tract, patch, bands,
+                       redo_bg=False, starsub=False):
+    """
+    load the deep coadds for a patch from the butler, with the
+    optional star subtraction and background redetermination
+    applied in that order.  Returns (coadds, wcs, starmask)
+    with the coadds wrapped for pull_mbobs and the wcs wrapped
+    for the jacobian helper
+    """
+    from .background import redo_background
+    from .defaults import SKYMAP_VERS
+    from .gaia import fetch_gaia
+    from .starsub import subtract_and_mask_stars
+    from .wcs import ButlerWcs
+
+    skymap = butler.get("skyMap", skymap=SKYMAP_VERS)
+    wcs = ButlerWcs(skymap[tract].wcs)
+
+    coadds = []
+    gaia = None
+    starmasks = []
+    for band in bands:
+        data_id = {
+            "band": band,
+            "skymap": SKYMAP_VERS,
+            "tract": tract,
+            "patch": patch,
+        }
+        print(data_id)
+        deep_coadd = butler.get('deep_coadd', dataId=data_id)
+        deep_coadd.apply_background('object')
+
+        smband = None
+        if starsub:
+            if gaia is None:
+                gaia = fetch_gaia(wcs, deep_coadd.bbox)
+            smband = subtract_and_mask_stars(
+                deep_coadd, wcs, gaia,
+            )
+            starmasks.append(smband)
+        if redo_bg:
+            redo_background(deep_coadd, starmask=smband)
+        coadds.append(ButlerCoadd(deep_coadd))
+
+    # one mask for all bands: consistent footprints downstream
+    starmask = None
+    if starsub:
+        starmask = np.logical_or.reduce(starmasks)
+        print(f'union star mask fraction {starmask.mean():.3f}')
+
+    return coadds, wcs, starmask

@@ -1,17 +1,38 @@
 """
 WCS helpers: headers, jacobians, sky positions
 """
-import lsst.geom
+
+
+class ButlerWcs(object):
+    """
+    thin wrapper around the DM tract wcs adding the
+    linearize_matrix method the jacobian helper uses;
+    everything else passes through.  The stack import lives
+    inside the method so this module imports without the LSST
+    pipelines (patchfiles.FileWcs is the file-backed
+    counterpart)
+    """
+
+    def __init__(self, dm_wcs):
+        self._wcs = dm_wcs
+
+    def __getattr__(self, name):
+        return getattr(self._wcs, name)
+
+    def linearize_matrix(self, x, y):
+        import lsst.geom
+
+        dm_jac = self._wcs.linearizePixelToSky(
+            lsst.geom.Point2D(x, y),
+            lsst.geom.arcseconds,
+        )
+        return dm_jac.getLinear().getMatrix()
 
 
 def get_cell_jacobian(wcs, bbox, x, y):
     import ngmix
 
-    dm_jac = wcs.linearizePixelToSky(
-        lsst.geom.Point2D(x, y),
-        lsst.geom.arcseconds,
-    )
-    matrix = dm_jac.getLinear().getMatrix()
+    matrix = wcs.linearize_matrix(x, y)
 
     # ESS reverse engineered this convention mismatch.  No documentation
     # was found.  Don't change this unless you know what you are doing.
