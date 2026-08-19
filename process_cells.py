@@ -2491,7 +2491,8 @@ def main(
         }
         print(data_id)
         deep_coadd = butler.get('deep_coadd', dataId=data_id)
-        deep_coadd.apply_background(None)
+        # deep_coadd.apply_background(None)
+        deep_coadd.apply_background('object')
         if redo_bg:
             redo_background(deep_coadd)
         deep_coadds.append(deep_coadd)
