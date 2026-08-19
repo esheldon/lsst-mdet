@@ -2,14 +2,10 @@
 TODO
 
 - mfrac for deblended objects
-- record what model was used
 - star mask
-- add deblending with special flags, gauss_, fam_
 - decide MIN_GOOD_FRAC
-- decide if keeping non primary
 - detection kernel (fixed or variable)
 - Tfrac (requires upstream)
-- keep track of fitted x/y?
 
 """
 import os
@@ -2337,6 +2333,7 @@ def write_output(
     cell_info,
     tract,
     patch,
+    model,
     seed,
     with_mdet,
     redo_bg,
@@ -2347,6 +2344,7 @@ def write_output(
         ('tract', 'i4'),
         ('patch', 'i4'),
         ('seed', 'i8'),
+        ('model', 'U5')
         ('with_mdet', bool),
         ('redo_bg', bool),
         ('deblend', bool),
@@ -2357,6 +2355,7 @@ def write_output(
     meta['patch'] = patch
     meta['seed'] = seed
     meta['with_mdet'] = with_mdet
+    meta['model'] = model
     meta['redo_bg'] = redo_bg
     meta['deblend'] = deblend
     meta['s2_detect'] = s2_detect
@@ -2577,6 +2576,7 @@ def main(
         cell_info=cell_info,
         tract=tract,
         patch=patch,
+        model=model,
         seed=seed,
         with_mdet=with_mdet,
         redo_bg=redo_bg,
