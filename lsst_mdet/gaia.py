@@ -76,7 +76,12 @@ def fetch_gaia(wcs, bbox, gmax=GMAX):
                     'unexpected TAP response: ' + text[:200],
                 )
             break
-        except Exception as err:
+        except (OSError, RuntimeError, UnicodeDecodeError) as err:
+            # OSError covers the whole network family (URLError,
+            # HTTPError, connection resets, timeouts, ssl);
+            # RuntimeError is our own unexpected-response check,
+            # so an error page from one mirror falls through to
+            # the next
             print(f'    gaia query failed at {url}: {err}')
             errors.append(f'{url}: {err}')
             text = None
@@ -106,3 +111,25 @@ def gaia_pixel_positions(gaia, wcs, bbox):
 
     x, y = wcs.skyToPixelArray(ra, dec, degrees=True)
     return x - bbox.x.start, y - bbox.y.start
+
+
+def fetch_gaia_or_none(wcs, bbox, gmax=GMAX, require=False):
+    """
+    fetch_gaia with failure handling: when require is set a
+    failure raises (never proceed silently without stars when
+    the caller asked for star handling); otherwise the error
+    is printed and None returned so the caller can degrade
+    gracefully
+    """
+    try:
+        return fetch_gaia(wcs, bbox, gmax=gmax)
+    except RuntimeError as err:
+        # the only expected failure: all mirrors exhausted
+        # (per-mirror errors are consumed inside fetch_gaia)
+        if require:
+            raise RuntimeError(
+                'gaia download failed and star subtraction '
+                'was requested'
+            ) from err
+        print('    gaia download failed:', err)
+        return None

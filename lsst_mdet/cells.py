@@ -187,69 +187,59 @@ def _make_cell_obs(image, var, good, noise, mfrac, psf_image, jacobian):
 def get_cell_centers(deep_coadd):
     """
     tract-frame pixel centers of the coadd cells, as (xs, ys)
-    1-d arrays whose outer product is the cell grid.  Tries the
-    coadd's cell grid attributes; falls back to the
-    lsst_cells_v2 150 px inner-cell grid over the patch bbox
+    1-d arrays whose outer product is the cell grid, from the
+    coadd's cell grid via grid.bbox_of(CellIJ(i, j)) as in
+    pull_mbobs.  Any API surprise raises: the psf evaluation
+    positions must come from the real grid
     """
-    bbox = deep_coadd.bbox
+    from lsst.images._cell_grid import CellIJ
+
+    grid = deep_coadd.grid
+
+    def center(b, ax):
+        a = getattr(b, ax)
+        return 0.5 * (a.start + a.stop)
+
+    # grid_size may be a plain pair or itself a CellIJ
+    gs = grid.grid_size
     try:
-        from lsst.images._cell_grid import CellIJ
-
-        grid = deep_coadd.grid
-
-        def center(b, ax):
-            a = getattr(b, ax)
-            return 0.5 * (a.start + a.stop)
-
-        # cell access as in process_cells.py pull_mbobs:
-        # grid.bbox_of(CellIJ(i, j)), centers at the bbox
-        # midpoint.  Probe which CellIJ axis is y rather than
-        # assuming the convention
-        gs = grid.grid_size
-        try:
-            n0, n1 = (int(v) for v in gs)
-        except TypeError:
-            # grid_size is itself a CellIJ
-            if hasattr(gs, 'i'):
-                n0, n1 = int(gs.i), int(gs.j)
-            else:
-                n0, n1 = int(gs.x), int(gs.y)
-        b00 = grid.bbox_of(CellIJ(0, 0))
-        i_is_y = True
-        if n0 > 1:
-            b10 = grid.bbox_of(CellIJ(1, 0))
-            i_is_y = b10.y.start != b00.y.start
-        if i_is_y:
-            nyc, nxc = n0, n1
-            ys = np.array([
-                center(grid.bbox_of(CellIJ(i, 0)), 'y')
-                for i in range(nyc)
-            ])
-            xs = np.array([
-                center(grid.bbox_of(CellIJ(0, j)), 'x')
-                for j in range(nxc)
-            ])
+        n0, n1 = (int(v) for v in gs)
+    except TypeError:
+        if hasattr(gs, 'i'):
+            n0, n1 = int(gs.i), int(gs.j)
         else:
-            nxc, nyc = n0, n1
-            xs = np.array([
-                center(grid.bbox_of(CellIJ(i, 0)), 'x')
-                for i in range(nxc)
-            ])
-            ys = np.array([
-                center(grid.bbox_of(CellIJ(0, j)), 'y')
-                for j in range(nyc)
-            ])
-        csx = int(round(xs[1] - xs[0])) if nxc > 1 else CELL_SIZE
-        csy = int(round(ys[1] - ys[0])) if nyc > 1 else CELL_SIZE
-        return (
-            xs, ys, (csx, csy), f'coadd grid {nyc} x {nxc}',
-        )
-    except Exception as err:
-        print('cell grid introspection failed:', err)
-    csx = csy = CELL_SIZE
-    xs = np.arange(bbox.x.start + csx / 2 - 0.5, bbox.x.stop, csx)
-    ys = np.arange(bbox.y.start + csy / 2 - 0.5, bbox.y.stop, csy)
-    return xs, ys, (csx, csy), f'fallback {CELL_SIZE}px grid'
+            n0, n1 = int(gs.x), int(gs.y)
+
+    # probe which CellIJ axis is y rather than assuming the
+    # convention
+    b00 = grid.bbox_of(CellIJ(0, 0))
+    i_is_y = True
+    if n0 > 1:
+        b10 = grid.bbox_of(CellIJ(1, 0))
+        i_is_y = b10.y.start != b00.y.start
+    if i_is_y:
+        nyc, nxc = n0, n1
+        ys = np.array([
+            center(grid.bbox_of(CellIJ(i, 0)), 'y')
+            for i in range(nyc)
+        ])
+        xs = np.array([
+            center(grid.bbox_of(CellIJ(0, j)), 'x')
+            for j in range(nxc)
+        ])
+    else:
+        nxc, nyc = n0, n1
+        xs = np.array([
+            center(grid.bbox_of(CellIJ(i, 0)), 'x')
+            for i in range(nxc)
+        ])
+        ys = np.array([
+            center(grid.bbox_of(CellIJ(0, j)), 'y')
+            for j in range(nyc)
+        ])
+    csx = int(round(xs[1] - xs[0])) if nxc > 1 else CELL_SIZE
+    csy = int(round(ys[1] - ys[0])) if nyc > 1 else CELL_SIZE
+    return xs, ys, (csx, csy), f'coadd grid {nyc} x {nxc}'
 
 
 class ButlerCoadd(object):
@@ -340,3 +330,66 @@ def load_coadds_butler(butler, tract, patch, bands,
         print(f'union star mask fraction {starmask.mean():.3f}')
 
     return coadds, wcs, starmask
+
+
+def make_psf_cube(deep_coadd, xs, ys):
+    """
+    evaluate the psf at every cell center for the getimages
+    output.  The stamp shape comes from the first successful
+    evaluation; failed cells (edge BoundsError) stay zero with
+    ok=0 in the cell table.
+
+    Parameters
+    ----------
+    deep_coadd: deep_coadd
+        The butler coadd
+    xs, ys: arrays
+        Tract-frame cell center coordinates, whose outer
+        product is the cell grid
+
+    Returns
+    -------
+    psf_stack, cells:
+        (ncell, ny, nx) f4 psf stamps and the row-matched cell
+        table with patch-frame centers; (None, None) if no
+        evaluation succeeded anywhere
+    """
+    from lsst.images._geom import BoundsError
+
+    psf = deep_coadd.psf
+    bbox = deep_coadd.bbox
+
+    psf_stack = None
+    pshape = None
+    cell_rows = []
+    nfail = 0
+    for cy in ys:
+        for cx in xs:
+            kim = None
+            try:
+                kim = psf.compute_kernel_image(x=cx, y=cy).array
+            except BoundsError:
+                nfail += 1
+            if kim is not None and psf_stack is None:
+                pshape = kim.shape
+                psf_stack = np.zeros(
+                    (ys.size * xs.size,) + pshape,
+                    dtype='f4',
+                )
+            cell_rows.append([cx, cy, kim])
+    if psf_stack is None:
+        return None, None
+    if nfail > 0:
+        print(f'    {nfail} cells failed psf evaluation')
+
+    cells = np.zeros(len(cell_rows), dtype=[
+        ('cellx', 'f4'), ('celly', 'f4'), ('ok', 'i2'),
+    ])
+    for k, (cx, cy, kim) in enumerate(cell_rows):
+        # patch-frame pixel coordinates
+        cells['cellx'][k] = cx - bbox.x.start
+        cells['celly'][k] = cy - bbox.y.start
+        if kim is not None and kim.shape == pshape:
+            psf_stack[k] = kim
+            cells['ok'][k] = 1
+    return psf_stack, cells

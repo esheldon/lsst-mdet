@@ -535,3 +535,77 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
     namp = int(sum(st['A'] > 0 for st in slist))
     print(f'    subtracted {namp} of {len(slist)} stars')
     return slist
+
+
+def make_star_table(stars, slist):
+    """
+    the gaia_stars output table: the census with the fitted
+    per-band amplitude filled in for the stars that received
+    stamps
+    """
+    star_table = np.zeros(len(stars), dtype=[
+        ('x', 'f8'), ('y', 'f8'), ('G', 'f4'),
+        ('ruwe', 'f4'), ('is_sat', 'i2'),
+        ('on_image', 'i2'), ('A', 'f8'),
+    ])
+    for name in ('x', 'y', 'G', 'ruwe', 'is_sat', 'on_image'):
+        star_table[name] = stars[name]
+    for st in slist:
+        star_table['A'][st['idx']] = st['A']
+    return star_table
+
+
+def handle_stars(deep_coadd, wcs, gaia, gsub=GSUB,
+                 subtract=True):
+    """
+    the getimages-time star handling: census, star mask, and
+    (optionally) template subtraction, modifying the image in
+    place.  Returns (starmask, star_table, dstar) with dstar
+    the distance transform off the mask (None when there is no
+    mask), for the background margin and the taper
+    """
+    from scipy import ndimage
+
+    mask0 = deep_coadd.mask.array[:, :, 0]
+    x, y = gaia_pixel_positions(gaia, wcs, deep_coadd.bbox)
+    stars = select_stars(gaia, x, y, mask0, gsub=gsub)
+    starmask, comps = build_star_mask(stars, mask0)
+
+    star_table = None
+    if subtract:
+        slist = subtract_stars(
+            deep_coadd.image.array,
+            deep_coadd.variance.array,
+            mask0, gaia, x, y, stars, comps,
+        )
+        star_table = make_star_table(stars, slist)
+
+    dstar = ndimage.distance_transform_edt(~starmask)
+    return starmask, star_table, dstar
+
+
+def apply_star_taper(deep_coadd, dstar, width=APOD_STARS):
+    """
+    apodize the star-mask regions, AFTER any background
+    determination, in both the image and the noise realization
+    so they stay statistically matched
+    """
+    from .apodize import taper_from_distance
+
+    taper = taper_from_distance(dstar, width)
+    deep_coadd.image.array[:, :] *= taper
+    deep_coadd.noise_realizations[0].array[:, :] *= taper
+
+
+def make_starmask_plane(starmask, dstar, apod):
+    """
+    the three-valued starmask output plane: 0 = clear, 1 =
+    taper zone (attenuated -- masked for any measurement,
+    smooth enough for FFTs), 2 = star mask (zeroed when
+    apod > 0)
+    """
+    plane = np.zeros(starmask.shape, dtype='u1')
+    if apod > 0:
+        plane[(dstar > 0) & (dstar < apod)] = 1
+    plane[starmask] = 2
+    return plane
