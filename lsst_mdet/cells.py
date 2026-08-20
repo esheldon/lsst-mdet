@@ -2,7 +2,7 @@
 mbobs construction from butler cell coadds
 """
 import numpy as np
-from .defaults import CELL_SIZE, DM_OUT, MIN_GOOD_FRAC, OVERLAP
+from .defaults import DM_OUT, MIN_GOOD_FRAC, OVERLAP
 from .detect import get_detect_noise, make_kernel
 from .structs import get_cell_info
 from .wcs import get_cell_jacobian
@@ -187,58 +187,20 @@ def _make_cell_obs(image, var, good, noise, mfrac, psf_image, jacobian):
 def get_cell_centers(deep_coadd):
     """
     tract-frame pixel centers of the coadd cells, as (xs, ys)
-    1-d arrays whose outer product is the cell grid, from the
-    coadd's cell grid via grid.bbox_of(CellIJ(i, j)) as in
-    pull_mbobs.  Any API surprise raises: the psf evaluation
-    positions must come from the real grid
+    1-d arrays whose outer product is the cell grid.
+
+    Conventions per lsst.images._cell_grid.CellGrid: grid_size
+    is a CellIJ with i along y and j along x, the grid is
+    uniform with cell_shape pixels per cell, and cell (0, 0)
+    has its corner at the grid bbox minimum
     """
-    from lsst.images._cell_grid import CellIJ
-
     grid = deep_coadd.grid
-
-    def center(b, ax):
-        a = getattr(b, ax)
-        return 0.5 * (a.start + a.stop)
-
-    # grid_size may be a plain pair or itself a CellIJ
-    gs = grid.grid_size
-    try:
-        n0, n1 = (int(v) for v in gs)
-    except TypeError:
-        if hasattr(gs, 'i'):
-            n0, n1 = int(gs.i), int(gs.j)
-        else:
-            n0, n1 = int(gs.x), int(gs.y)
-
-    # probe which CellIJ axis is y rather than assuming the
-    # convention
-    b00 = grid.bbox_of(CellIJ(0, 0))
-    i_is_y = True
-    if n0 > 1:
-        b10 = grid.bbox_of(CellIJ(1, 0))
-        i_is_y = b10.y.start != b00.y.start
-    if i_is_y:
-        nyc, nxc = n0, n1
-        ys = np.array([
-            center(grid.bbox_of(CellIJ(i, 0)), 'y')
-            for i in range(nyc)
-        ])
-        xs = np.array([
-            center(grid.bbox_of(CellIJ(0, j)), 'x')
-            for j in range(nxc)
-        ])
-    else:
-        nxc, nyc = n0, n1
-        xs = np.array([
-            center(grid.bbox_of(CellIJ(i, 0)), 'x')
-            for i in range(nxc)
-        ])
-        ys = np.array([
-            center(grid.bbox_of(CellIJ(0, j)), 'y')
-            for j in range(nyc)
-        ])
-    csx = int(round(xs[1] - xs[0])) if nxc > 1 else CELL_SIZE
-    csy = int(round(ys[1] - ys[0])) if nyc > 1 else CELL_SIZE
+    nyc = int(grid.grid_size.i)
+    nxc = int(grid.grid_size.j)
+    csy = int(grid.cell_shape.y)
+    csx = int(grid.cell_shape.x)
+    ys = grid.bbox.y.start + (np.arange(nyc) + 0.5) * csy
+    xs = grid.bbox.x.start + (np.arange(nxc) + 0.5) * csx
     return xs, ys, (csx, csy), f'coadd grid {nyc} x {nxc}'
 
 
