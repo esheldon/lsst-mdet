@@ -36,6 +36,19 @@ def get_cell_jacobian(wcs, bbox, x, y):
 
     # ESS reverse engineered this convention mismatch.  No documentation
     # was found.  Don't change this unless you know what you are doing.
+    #
+    # Additional analysis in 2026: Convention, measured against the w_2026_31
+    # stack (and reproduced by finite differences of pixelToSky, which is what
+    # patchfiles.FileWcs.linearize_matrix computes):
+    #   matrix[i, j] = d(sky_i) / d(pixel_j) in arcsec/pixel,
+    #   sky = (true ra offset, i.e. ra*cos(dec), dec) and
+    #   pixel = (x, y)
+    # With the index shuffle below, and det(matrix) < 0 as for
+    # any mirror-parity sky image, the ngmix (u, v) tangent
+    # plane follows the galsim convention (ngmix dudx means
+    # du/dcol): u = -dra*cos(dec) increasing to the west,
+    # v = +ddec increasing to the north, exact up to the tiny
+    # non-conformality of the local wcs
     return ngmix.Jacobian(
         x=x - bbox.x.start,
         y=y - bbox.y.start,
