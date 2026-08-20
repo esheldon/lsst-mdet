@@ -97,36 +97,10 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
             obs.meta['bbox'] = bbox
             obs.meta['band'] = deep_coadd.band
 
-            noise_bad = np.isnan(noise)
-            wnoise_bad = np.where(noise_bad)
-            assert np.all(np.isnan(noise[wnoise_bad]))
-            # assert np.all(np.isnan(image[wnoise_bad]))
-            if wnoise_bad[0].size > 0:
+            nbad = np.isnan(noise).sum()
+            if nbad > 0:
                 print(f'cell_i: {cell_i} cell_j: {cell_j} iband: {iband}')
-                print(
-                    f'  found {wnoise_bad[0].size} / {noise.size} nan in noise'
-                )
-                if False:
-                    png = 'bad.jpg'
-                    import matplotlib.pyplot as mplt
-                    with mplt.style.context('dark_background'):
-                        fig, axs = mplt.subplots(
-                            ncols=2, nrows=2, figsize=(10, 10)
-                        )
-                        axs[0, 0].set_title('image')
-                        axs[0, 0].imshow(
-                            np.log10(image.clip(min=0.001)), cmap='gray'
-                        )
-                        axs[0, 1].set_title('noise')
-                        axs[0, 1].imshow(noise, cmap='gray')
-                        axs[1, 0].set_title('mask')
-                        axs[1, 0].imshow(mask, cmap='gray')
-                        axs[1, 1].set_title('var')
-                        axs[1, 1].imshow(var, cmap='gray')
-                        fig.savefig(png)
-
-                    import IPython
-                    IPython.embed()
+                print(f'  found {nbad} / {noise.size} nan in noise')
                 break
 
             sigma_band = get_detect_noise(
@@ -135,9 +109,6 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
                 weight=obs.weight,
             )
             medwt = np.median(obs.weight[obs.weight > 0])
-            # print(f'    median weight: {medwt:g} sigma_band: {sigma_band:g}')
-            # if not np.isfinite(sigma_band):
-            #     import IPython; IPython.embed()
             obs.weight = obs.weight / (sigma_band ** 2 * medwt)
 
             obslist = ngmix.ObsList()
@@ -314,7 +285,8 @@ def make_psf_cube(deep_coadd, xs, ys):
     psf_stack, cells:
         (ncell, ny, nx) f4 psf stamps and the row-matched cell
         table with patch-frame centers; (None, None) if no
-        evaluation succeeded anywhere
+        evaluation succeeded anywhere.  Stamp shape is constant
+        across cells, guaranteed by the lsst.images psf classes
     """
     from lsst.images._geom import BoundsError
 
@@ -351,7 +323,7 @@ def make_psf_cube(deep_coadd, xs, ys):
         # patch-frame pixel coordinates
         cells['cellx'][k] = cx - bbox.x.start
         cells['celly'][k] = cy - bbox.y.start
-        if kim is not None and kim.shape == pshape:
+        if kim is not None:
             psf_stack[k] = kim
             cells['ok'][k] = 1
     return psf_stack, cells

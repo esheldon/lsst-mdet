@@ -110,9 +110,6 @@ def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):
             axs[i].set_title(obslist[0].meta['band'])
         fig.savefig('bad-psfs.png', dpi=150)
 
-        # import IPython
-        # IPython.embed()
-
         # can't do extra without a psf
         cat = get_struct(bands=bands, n=sxcat.size)
 

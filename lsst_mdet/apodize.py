@@ -37,8 +37,7 @@ def apodize_mbobs(mbobs):
 
                     obs.bmask[msk] |= 1
 
-                    if hasattr(obs, "mfrac"):
-                        obs.mfrac[msk] = 1.0
+                    obs.mfrac[msk] = 1.0
 
                     if msk[0].size == obs.image.size:
                         obs.ignore_zero_weight = False

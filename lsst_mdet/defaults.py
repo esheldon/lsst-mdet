@@ -21,8 +21,8 @@ FLAG_DUPLICATE_EXTRA = 2 ** 26
 MIN_GOOD_FRAC = 0.2
 
 # cell geometry: inner-cell overlap for the processing window,
-# and the lsst_cells_v2 inner cell size (also the fallback when
-# the coadd's own cell grid cannot be introspected)
+# and the lsst_cells_v2 inner cell size (used by the
+# file-backed cell windows in patchfiles)
 OVERLAP = 50
 OVERLAP_LOW = 50
 OVERLAP_HIGH = 200
