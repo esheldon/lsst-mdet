@@ -9,7 +9,7 @@ from lsst.daf.butler import Butler
 
 from ..background import redo_background
 from ..cells import get_cell_centers, make_psf_cube
-from ..defaults import SKYMAP_VERS
+from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
 from ..gaia import GMAX, fetch_gaia_or_none
 from ..io import write_patch_files
 from ..patchfiles import get_patch_filename
@@ -93,8 +93,7 @@ def main():
     if not os.path.exists(args.patch_dir):
         os.makedirs(args.patch_dir, exist_ok=True)
 
-    # this will change
-    butler = Butler('dp2_prep_future', collections=["LSSTCam/runs/DRP/DP2"])
+    butler = Butler(args.repo, collections=args.collections)
     skymap = butler.get("skyMap", skymap=SKYMAP_VERS)
     wcs = skymap[tract].wcs
 
@@ -191,6 +190,14 @@ def get_args():
     parser.add_argument('--tract', type=int, required=True)
     parser.add_argument('--patch', type=int, required=True)
     parser.add_argument('--patch-dir', required=True)
+    parser.add_argument(
+        '--repo', default=BUTLER_REPO,
+        help='butler repo path or alias',
+    )
+    parser.add_argument(
+        '--collections', nargs='+', default=BUTLER_COLLECTIONS,
+        help='butler collections to search',
+    )
     parser.add_argument(
         '--starsub', action=argparse.BooleanOptionalAction,
         default=False,

@@ -29,3 +29,12 @@ OVERLAP_HIGH = 200
 CELL_SIZE = 150
 
 SKYMAP_VERS = 'lsst_cells_v2'
+
+# the USDF DP2 repo; override with --repo/--collections when
+# running against a butler at another site (e.g. nersc)
+# for usdf
+# BUTLER_REPO = 'dp2_prep_future'
+# BUTLER_COLLECTIONS = ['LSSTCam/runs/DRP/DP2']
+# for nersc
+BUTLER_REPO = 'dp2'
+BUTLER_COLLECTIONS = ['dp2']

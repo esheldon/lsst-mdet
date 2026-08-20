@@ -4,6 +4,7 @@ cli/process_cells
 import numpy as np
 from ..apodize import apodize_mbobs
 from ..cells import load_coadds_butler, pull_mbobs
+from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO
 from ..patchfiles import load_coadds_files
 from ..io import write_output
 from ..pipeline import do_metacal_and_process, process_one_mbobs
@@ -25,6 +26,14 @@ def get_args():
              'the butler (no LSST stack needed); --redo-bg '
              'and --starsub are refused in this mode, they '
              'are getimages-time operations',
+    )
+    parser.add_argument(
+        '--repo', default=BUTLER_REPO,
+        help='butler repo path or alias (butler mode only)',
+    )
+    parser.add_argument(
+        '--collections', nargs='+', default=BUTLER_COLLECTIONS,
+        help='butler collections to search (butler mode only)',
     )
     parser.add_argument('--deblend', action='store_true')
     parser.add_argument('--s2-detect', action='store_true')
@@ -55,6 +64,8 @@ def main(
     s2_detect,
     progress,
     show,
+    repo=BUTLER_REPO,
+    collections=BUTLER_COLLECTIONS,
 ):
     from tqdm import trange
 
@@ -78,10 +89,7 @@ def main(
     else:
         from lsst.daf.butler import Butler
 
-        butler = Butler(
-            'dp2_prep_future',
-            collections=["LSSTCam/runs/DRP/DP2"],
-        )
+        butler = Butler(repo, collections=collections)
         deep_coadds, wcs, starmask = load_coadds_butler(
             butler=butler, tract=tract, patch=patch,
             bands=bands, redo_bg=redo_bg, starsub=starsub,
@@ -194,6 +202,8 @@ def main_cli():
         outfile=_args.outfile,
         progress=_args.progress,
         show=_args.show,
+        repo=_args.repo,
+        collections=_args.collections,
     )
 
 
