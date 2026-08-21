@@ -5,6 +5,7 @@ numba
 matplotlib
 tqdm
 # astronomy (conda-forge; ngmix has no PyPI package)
+astropy
 sep
 ngmix
 des-sxdes

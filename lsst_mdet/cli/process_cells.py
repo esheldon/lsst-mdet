@@ -14,7 +14,7 @@ from ..hmaps import (
     trim_footprint_to_tract_bounds,
 )
 from ..patchfiles import load_coadds_files
-from ..io import write_output
+from ..io import write_color_image, write_output
 from ..pipeline import do_metacal_and_process, process_one_mbobs
 from ..psf import fit_and_set_psfrec
 from ..wcs import calculate_positions
@@ -238,6 +238,14 @@ def main(
 
     print('writing:', footprint_fname)
     footprint.write(footprint_fname, clobber=True)
+
+    # reduced-resolution color image of the final masked
+    # images, non-footprint area tinted, for inspecting gross
+    # problems
+    write_color_image(
+        outfile.replace('.fits', '-color.jpg'), deep_coadds,
+        wcs=wcs, footprint=footprint,
+    )
 
 
 def main_cli():
