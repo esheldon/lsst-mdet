@@ -18,9 +18,11 @@ def load_coadds_files(patch_dir, tract, patch, bands):
     """
     load a patch from getimages FITS output: the file-backed
     counterpart of the butler loader.  Returns
-    (coadds, wcs, starmask), with starmask the combined
-    attenuation-zone mask when the files carry a starmask
-    extension (getimages --starsub) and None otherwise
+    (coadds, wcs, starmask, star_table, apod), with starmask
+    the combined attenuation-zone mask when the files carry a
+    starmask extension (getimages --starsub) and None
+    otherwise, and the star census and taper width for the
+    mask map (None and 0 without starsub)
     """
     coadds = []
     starmask = None
@@ -36,7 +38,10 @@ def load_coadds_files(patch_dir, tract, patch, bands):
             starmask = sm if starmask is None \
                 else (starmask | sm)
     wcs = FileWcs(coadds[0].hdr)
-    return coadds, wcs, starmask
+    return (
+        coadds, wcs, starmask,
+        coadds[0]._star_table, coadds[0]._apod,
+    )
 
 
 def get_patch_filename(tract, patch, band, patch_dir=None):
@@ -131,8 +136,14 @@ class FilePatchCoadd(object):
             self._psfs = f['psfs'].read().astype('f8')
             self._cells = f['psf_cells'].read()
             self._starmask = None
+            self._apod = 0.0
             if 'starmask' in extnames:
-                self._starmask = f['starmask'].read()
+                hdu = f['starmask']
+                self._starmask = hdu.read()
+                self._apod = float(hdu.header['APOD'])
+            self._star_table = None
+            if 'gaia_stars' in extnames:
+                self._star_table = f['gaia_stars'].read()
 
         self.hdr = hdr
         # LTV records the afw subimage origin: patch = tract - x0

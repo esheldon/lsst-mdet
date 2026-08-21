@@ -217,14 +217,16 @@ def load_coadds_butler(butler, tract, patch, bands,
     """
     load the deep coadds for a patch from the butler, with the
     optional star subtraction and background redetermination
-    applied in that order.  Returns (coadds, wcs, starmask)
-    with the coadds wrapped for pull_mbobs and the wcs wrapped
-    for the jacobian helper
+    applied in that order.  Returns
+    (coadds, wcs, starmask, star_table, apod) with the coadds
+    wrapped for pull_mbobs, the wcs wrapped for the jacobian
+    helper, and the star census and taper width for the mask
+    map (None and 0 without starsub)
     """
     from .background import redo_background
     from .defaults import SKYMAP_VERS
     from .gaia import fetch_gaia
-    from .starsub import subtract_and_mask_stars
+    from .starsub import APOD_STARS, subtract_and_mask_stars
     from .wcs import ButlerWcs
 
     skymap = butler.get("skyMap", skymap=SKYMAP_VERS)
@@ -233,6 +235,7 @@ def load_coadds_butler(butler, tract, patch, bands,
     coadds = []
     gaia = None
     starmasks = []
+    star_table = None
     for band in bands:
         data_id = {
             "band": band,
@@ -248,9 +251,13 @@ def load_coadds_butler(butler, tract, patch, bands,
         if starsub:
             if gaia is None:
                 gaia = fetch_gaia(wcs, deep_coadd.bbox)
-            smband = subtract_and_mask_stars(
+            smband, stars = subtract_and_mask_stars(
                 deep_coadd, wcs, gaia,
             )
+            if star_table is None:
+                # the census is the same in every band up to
+                # per-band saturation details; keep the first
+                star_table = stars
             starmasks.append(smband)
         if redo_bg:
             redo_background(deep_coadd, starmask=smband)
@@ -258,11 +265,13 @@ def load_coadds_butler(butler, tract, patch, bands,
 
     # one mask for all bands: consistent footprints downstream
     starmask = None
+    apod = 0.0
     if starsub:
         starmask = np.logical_or.reduce(starmasks)
+        apod = APOD_STARS
         print(f'union star mask fraction {starmask.mean():.3f}')
 
-    return coadds, wcs, starmask
+    return coadds, wcs, starmask, star_table, apod
 
 
 def make_psf_cube(deep_coadd, xs, ys):

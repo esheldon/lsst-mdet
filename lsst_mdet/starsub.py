@@ -41,10 +41,10 @@ def subtract_and_mask_stars(deep_coadd, wcs, gaia):
     floored circle plus flagged components are apodized to zero
     in the image and noise planes.
 
-    Returns the attenuation-zone mask (bool, patch frame,
-    covering the taper as well as the zeroed core): those
-    pixels must carry zero weight downstream and stay out of
-    the background estimation
+    Returns (attenuation mask, star census).  The mask (bool,
+    patch frame) covers the taper as well as the zeroed core:
+    those pixels must carry zero weight downstream and stay
+    out of the background estimation
     """
     from scipy import ndimage
 
@@ -62,12 +62,12 @@ def subtract_and_mask_stars(deep_coadd, wcs, gaia):
     taper = taper_from_distance(d, APOD_STARS)
     deep_coadd.image.array[:, :] *= taper
     deep_coadd.noise_realizations[0].array[:, :] *= taper
-    return d < APOD_STARS
+    return d < APOD_STARS, stars
 
 
 def circle_radius(gmag):
-    return min(
-        max(
+    return np.minimum(
+        np.maximum(
             MASK_R15 * 10 ** (MASK_SLOPE * (15.0 - gmag)),
             MINRAD,
         ),
@@ -111,9 +111,11 @@ def select_stars(gaia, x, y, mask0, gsub=GSUB):
                     and -STAR_MARGIN < iy < ny + STAR_MARGIN):
                 continue
         rows.append((
+            float(gaia['ra'][k]), float(gaia['dec'][k]),
             xk, yk, gmag, ruwe, int(is_sat), int(on),
         ))
     stars = np.array(rows, dtype=[
+        ('ra', 'f8'), ('dec', 'f8'),
         ('x', 'f8'), ('y', 'f8'), ('G', 'f4'), ('ruwe', 'f4'),
         ('is_sat', 'i2'), ('on_image', 'i2'),
     ])
@@ -544,11 +546,13 @@ def make_star_table(stars, slist):
     stamps
     """
     star_table = np.zeros(len(stars), dtype=[
+        ('ra', 'f8'), ('dec', 'f8'),
         ('x', 'f8'), ('y', 'f8'), ('G', 'f4'),
         ('ruwe', 'f4'), ('is_sat', 'i2'),
         ('on_image', 'i2'), ('A', 'f8'),
     ])
-    for name in ('x', 'y', 'G', 'ruwe', 'is_sat', 'on_image'):
+    for name in ('ra', 'dec', 'x', 'y', 'G', 'ruwe',
+                 'is_sat', 'on_image'):
         star_table[name] = stars[name]
     for st in slist:
         star_table['A'][st['idx']] = st['A']

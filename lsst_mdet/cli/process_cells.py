@@ -5,6 +5,7 @@ import numpy as np
 from ..apodize import apodize_mbobs
 from ..cells import load_coadds_butler, pull_mbobs
 from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO
+from ..hmaps import make_mask_map
 from ..patchfiles import load_coadds_files
 from ..io import write_output
 from ..pipeline import do_metacal_and_process, process_one_mbobs
@@ -82,17 +83,21 @@ def main(
                 'operations; the patch files already carry '
                 'their effects'
             )
-        deep_coadds, wcs, starmask = load_coadds_files(
-            patch_dir=patch_dir, tract=tract, patch=patch,
-            bands=bands,
+        deep_coadds, wcs, starmask, star_table, apod = (
+            load_coadds_files(
+                patch_dir=patch_dir, tract=tract, patch=patch,
+                bands=bands,
+            )
         )
     else:
         from lsst.daf.butler import Butler
 
         butler = Butler(repo, collections=collections)
-        deep_coadds, wcs, starmask = load_coadds_butler(
-            butler=butler, tract=tract, patch=patch,
-            bands=bands, redo_bg=redo_bg, starsub=starsub,
+        deep_coadds, wcs, starmask, star_table, apod = (
+            load_coadds_butler(
+                butler=butler, tract=tract, patch=patch,
+                bands=bands, redo_bg=redo_bg, starsub=starsub,
+            )
         )
 
     if progress:
@@ -184,6 +189,17 @@ def main(
         deblend=deblend,
         s2_detect=s2_detect,
     )
+
+    hmap = make_mask_map(
+        wcs=wcs,
+        bbox=deep_coadds[0].bbox,
+        cell_info=cell_info,
+        star_table=star_table,
+        apod=apod,
+    )
+    mask_fname = outfile.replace('.fits', '-mask.hsp')
+    print('writing:', mask_fname)
+    hmap.write(mask_fname, clobber=True)
 
 
 def main_cli():
