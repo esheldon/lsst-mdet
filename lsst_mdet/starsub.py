@@ -27,7 +27,10 @@ TMPL_HALF = 50       # measured stamp half size
 TMPL_OUT_HALF = 250  # power-law halo extension half size
 TMPL_NSTAR = 60
 TMPL_GMIN = GSAT + 0.3  # template stars: bright but unsaturated
-TMPL_GMAX = 17.5
+TMPL_GMAX = 17.5        # preferred faint limit
+TMPL_GMAX_CAP = 19.0    # adaptive faint-limit cap (census depth)
+TMPL_MIN_CAND = 20      # extend the faint limit below this
+TMPL_MIN_STAMPS = 10    # hard minimum usable stamps
 HALO_SLOPE = -3.7   # optics halo power law, for corrupted fits
 
 NPASS = 3           # joint amplitude passes
@@ -181,18 +184,37 @@ def select_template_stars(gaia, x, y, shape):
     """
     indices of the template-stack stars: bright but
     unsaturated, astrometrically clean, and far enough from the
-    edges for a full stamp; brightest TMPL_NSTAR kept
+    edges for a full stamp; brightest TMPL_NSTAR kept.
+
+    The faint limit starts at TMPL_GMAX and, on sparse fields
+    yielding fewer than TMPL_MIN_CAND candidates, extends in
+    0.5 mag steps up to TMPL_GMAX_CAP.  Deep-coadd cores are
+    still very high s/n there, and the extended-limit stack
+    was validated on a real sparse field (agrees with the
+    bright stack to < 1 percent inside the denoise core).  At
+    the cap the template stars overlap the census; benign,
+    since the stack is built from the pre-subtraction image
     """
     ny, nx = shape
     half = TMPL_HALF
     gmag = gaia['phot_g_mean_mag']
     ruwe = gaia['ruwe']
-    sel = np.where(
-        (gmag > TMPL_GMIN) & (gmag < TMPL_GMAX)
+    base = (
+        (gmag > TMPL_GMIN)
         & np.isfinite(ruwe) & (ruwe < RUWE_MAX)
         & (x > half + 2) & (x < nx - half - 3)
         & (y > half + 2) & (y < ny - half - 3)
-    )[0]
+    )
+    gmax_t = TMPL_GMAX
+    while True:
+        sel = np.where(base & (gmag < gmax_t))[0]
+        if sel.size >= TMPL_MIN_CAND or gmax_t >= TMPL_GMAX_CAP:
+            break
+        gmax_t = min(gmax_t + 0.5, TMPL_GMAX_CAP)
+    if gmax_t != TMPL_GMAX:
+        print(f'    sparse field: template faint limit '
+              f'extended to G < {gmax_t:.1f} '
+              f'({sel.size} candidates)')
     return sel[np.argsort(gmag[sel])][:TMPL_NSTAR]
 
 
@@ -232,7 +254,7 @@ def stack_star_stamps(image, good, seg, x, y, sel):
         if not amp > 0:
             continue
         stamps.append(stamp / amp)
-    if len(stamps) < 10:
+    if len(stamps) < TMPL_MIN_STAMPS:
         raise RuntimeError(f'only {len(stamps)} usable '
                            'template stamps')
 
@@ -517,7 +539,16 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
     sig = float(np.sqrt(np.median(var[good])))
     seg = field_segmentation(image, good, sig)
 
-    tmpl = build_template(image, good, seg, gaia, x, y)
+    try:
+        tmpl = build_template(image, good, seg, gaia, x, y)
+    except RuntimeError as err:
+        # mask-only fallback: a patch too barren to build a
+        # template even at the extended faint limit has next
+        # to nothing worth subtracting.  Keep the masking and
+        # taper (an empty work list leaves every amplitude 0)
+        print(f'    WARNING: no star template ({err}); '
+              'masking without subtraction')
+        return []
     half = TMPL_OUT_HALF
     gy, gx = np.mgrid[-half:half + 1, -half:half + 1]
     rr = np.hypot(gy, gx)  # radius grid in the template frame

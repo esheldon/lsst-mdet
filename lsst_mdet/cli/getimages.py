@@ -149,16 +149,12 @@ def main():
                 if gaia is None:
                     gaia_failed = True
 
-        try:
-            starmask_plane, apod, star_table = prepare_band(
-                deep_coadd, wcs, gaia, args,
-            )
-        except RuntimeError as err:
-            # the expected failure is the star template
-            # (too few usable stamps on a pathological band):
-            # skip the band.  Anything else should crash
-            print(f'{type(err).__name__}: {err}')
-            continue
+        # a sparse-field template failure degrades to
+        # mask-only inside subtract_stars, so any error here
+        # is a bug and should crash
+        starmask_plane, apod, star_table = prepare_band(
+            deep_coadd, wcs, gaia, args,
+        )
 
         # psf at every cell center
         xs, ys, (csx, csy), how = get_cell_centers(deep_coadd)
