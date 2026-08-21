@@ -43,6 +43,12 @@ def get_args():
         '--collections', nargs='+', default=BUTLER_COLLECTIONS,
         help='butler collections to search (butler mode only)',
     )
+    parser.add_argument(
+        '--gaia-file',
+        help='read the gaia stars from this parquet file '
+             '(columns gaia_g_mag, ra, dec) instead of the '
+             'TAP query (butler mode with --starsub only)',
+    )
     parser.add_argument('--deblend', action='store_true')
     parser.add_argument('--s2-detect', action='store_true')
     parser.add_argument('--redo-bg', action='store_true')
@@ -74,6 +80,7 @@ def main(
     show,
     repo=BUTLER_REPO,
     collections=BUTLER_COLLECTIONS,
+    gaia_file=None,
 ):
     from tqdm import trange
 
@@ -106,6 +113,7 @@ def main(
             load_coadds_butler(
                 butler=butler, tract=tract, patch=patch,
                 bands=bands, redo_bg=redo_bg, starsub=starsub,
+                gaia_file=gaia_file,
             )
         )
 
@@ -250,6 +258,7 @@ def main_cli():
         show=_args.show,
         repo=_args.repo,
         collections=_args.collections,
+        gaia_file=_args.gaia_file,
     )
 
 

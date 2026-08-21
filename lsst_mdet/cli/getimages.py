@@ -10,7 +10,7 @@ from lsst.daf.butler import Butler
 from ..background import redo_background
 from ..cells import get_cell_centers, get_tract_bounds, make_psf_cube
 from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
-from ..gaia import GMAX, fetch_gaia_or_none
+from ..gaia import GMAX, fetch_gaia_or_none, read_gaia_parquet
 from ..io import write_patch_files
 from ..patchfiles import get_patch_filename
 from ..starsub import (
@@ -133,13 +133,21 @@ def main():
         # Without it, degrade once and do not retry per band
         if gaia is None and not gaia_failed \
                 and (args.starsub or args.redo_bg):
-            gaia = fetch_gaia_or_none(
-                wcs, deep_coadd.bbox,
-                gmax=max(args.gsub, GMAX),
-                require=args.starsub,
-            )
-            if gaia is None:
-                gaia_failed = True
+            gmax = max(args.gsub, GMAX)
+            if args.gaia_file is not None:
+                # a bad file is user error: crash, never
+                # degrade
+                gaia = read_gaia_parquet(
+                    args.gaia_file, wcs, deep_coadd.bbox,
+                    gmax=gmax,
+                )
+            else:
+                gaia = fetch_gaia_or_none(
+                    wcs, deep_coadd.bbox, gmax=gmax,
+                    require=args.starsub,
+                )
+                if gaia is None:
+                    gaia_failed = True
 
         try:
             starmask_plane, apod, star_table = prepare_band(
@@ -222,6 +230,12 @@ def get_args():
         '--gsub', type=float, default=GSUB,
         help='subtract and mask Gaia stars brighter than '
              'this; the download depth follows it',
+    )
+    parser.add_argument(
+        '--gaia-file',
+        help='read the gaia stars from this parquet file '
+             '(columns gaia_g_mag, ra, dec) instead of the '
+             'TAP query',
     )
     parser.add_argument(
         '--apod-stars', action=argparse.BooleanOptionalAction,

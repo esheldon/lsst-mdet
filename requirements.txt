@@ -11,6 +11,9 @@ des-sxdes
 fofx
 rustfits
 healsparse
+# pandas (with a parquet engine, e.g. pyarrow) is required
+# only for the --gaia-file parquet input; the rubin/stackvana
+# environments already carry it
 # ALSO REQUIRED but not yet packaged on PyPI or conda
 # (install from source; see README):
 #   metacal

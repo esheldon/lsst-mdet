@@ -216,7 +216,8 @@ class ButlerCoadd(object):
 
 
 def load_coadds_butler(butler, tract, patch, bands,
-                       redo_bg=False, starsub=False):
+                       redo_bg=False, starsub=False,
+                       gaia_file=None):
     """
     load the deep coadds for a patch from the butler, with the
     optional star subtraction and background redetermination
@@ -230,7 +231,7 @@ def load_coadds_butler(butler, tract, patch, bands,
     """
     from .background import redo_background
     from .defaults import SKYMAP_VERS
-    from .gaia import fetch_gaia
+    from .gaia import fetch_gaia, read_gaia_parquet
     from .starsub import APOD_STARS, subtract_and_mask_stars
     from .wcs import ButlerWcs
 
@@ -258,7 +259,12 @@ def load_coadds_butler(butler, tract, patch, bands,
         smband = None
         if starsub:
             if gaia is None:
-                gaia = fetch_gaia(wcs, deep_coadd.bbox)
+                if gaia_file is not None:
+                    gaia = read_gaia_parquet(
+                        gaia_file, wcs, deep_coadd.bbox,
+                    )
+                else:
+                    gaia = fetch_gaia(wcs, deep_coadd.bbox)
             smband, stars = subtract_and_mask_stars(
                 deep_coadd, wcs, gaia,
             )
