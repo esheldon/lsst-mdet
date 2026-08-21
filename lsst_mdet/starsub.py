@@ -3,7 +3,6 @@ Gaia-driven bright-star subtraction and masking
 """
 import numpy as np
 from .defaults import DM_INTRP, DM_OUT, DM_SAT
-from .apodize import taper_from_distance
 from .gaia import gaia_pixel_positions
 
 # every census star is subtracted with the empirical extended
@@ -34,38 +33,6 @@ TMPL_MIN_STAMPS = 10    # hard minimum usable stamps
 HALO_SLOPE = -3.7   # optics halo power law, for corrupted fits
 
 NPASS = 3           # joint amplitude passes
-
-
-def subtract_and_mask_stars(deep_coadd, wcs, gaia):
-    """
-    Gaia star subtraction and masking at the patch level, using
-    the getimages_patch.py machinery: every census star is
-    subtracted with the empirical extended template, then its
-    floored circle plus flagged components are apodized to zero
-    in the image and noise planes.
-
-    Returns (attenuation mask, star census).  The mask (bool,
-    patch frame) covers the taper as well as the zeroed core:
-    those pixels must carry zero weight downstream and stay
-    out of the background estimation
-    """
-    from scipy import ndimage
-
-    bbox = deep_coadd.bbox
-    mask0 = deep_coadd.mask.array[:, :, 0]
-    x, y = gaia_pixel_positions(gaia, wcs, bbox)
-    stars = select_stars(gaia, x, y, mask0)
-    starmask, comps = build_star_mask(stars, mask0)
-    subtract_stars(
-        deep_coadd.image.array,
-        deep_coadd.variance.array,
-        mask0, gaia, x, y, stars, comps,
-    )
-    d = ndimage.distance_transform_edt(~starmask)
-    taper = taper_from_distance(d, APOD_STARS)
-    deep_coadd.image.array[:, :] *= taper
-    deep_coadd.noise_realizations[0].array[:, :] *= taper
-    return d < APOD_STARS, stars
 
 
 def circle_radius(gmag):

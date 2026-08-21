@@ -232,7 +232,9 @@ def load_coadds_butler(butler, tract, patch, bands,
     from .background import redo_background
     from .defaults import SKYMAP_VERS
     from .gaia import fetch_gaia, read_gaia_parquet
-    from .starsub import APOD_STARS, subtract_and_mask_stars
+    from .starsub import (
+        APOD_STARS, BG_GROW, apply_star_taper, handle_stars,
+    )
     from .wcs import ButlerWcs
 
     skymap = butler.get("skyMap", skymap=SKYMAP_VERS)
@@ -256,7 +258,6 @@ def load_coadds_butler(butler, tract, patch, bands,
         deep_coadd = butler.get('deep_coadd', dataId=data_id)
         deep_coadd.apply_background('object')
 
-        smband = None
         if starsub:
             if gaia is None:
                 if gaia_file is not None:
@@ -265,16 +266,25 @@ def load_coadds_butler(butler, tract, patch, bands,
                     )
                 else:
                     gaia = fetch_gaia(wcs, deep_coadd.bbox)
-            smband, stars = subtract_and_mask_stars(
-                deep_coadd, wcs, gaia,
+            # the getimages sequence: subtract, background,
+            # then the taper LAST, so the star holes stay
+            # exactly zero (tapering first would leave -bkg
+            # inside them after the background subtraction)
+            starmask_b, stable_b, dstar = handle_stars(
+                deep_coadd, wcs, gaia, subtract=True,
             )
             if star_table is None:
                 # the census is the same in every band up to
                 # per-band saturation details; keep the first
-                star_table = stars
-            starmasks.append(smband)
-        if redo_bg:
-            redo_background(deep_coadd, starmask=smband)
+                star_table = stable_b
+            if redo_bg:
+                redo_background(
+                    deep_coadd, starmask=dstar < BG_GROW,
+                )
+            apply_star_taper(deep_coadd, dstar, width=APOD_STARS)
+            starmasks.append(dstar < APOD_STARS)
+        elif redo_bg:
+            redo_background(deep_coadd, starmask=None)
         coadds.append(ButlerCoadd(deep_coadd))
 
     # one mask for all bands: consistent footprints downstream

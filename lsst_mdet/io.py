@@ -50,6 +50,9 @@ def write_color_image(fname, coadds, wcs=None, footprint=None,
     from astropy.visualization import make_lupton_rgb
     from PIL import Image
 
+    # no blanking of flagged pixels: this is a diagnostics
+    # image and shows the values as processing would see them
+    # (star masking zeroes the saturated cores when it is on)
     imlist = []
     sigs = []
     for coadd in coadds:
