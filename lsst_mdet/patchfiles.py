@@ -18,11 +18,12 @@ def load_coadds_files(patch_dir, tract, patch, bands):
     """
     load a patch from getimages FITS output: the file-backed
     counterpart of the butler loader.  Returns
-    (coadds, wcs, starmask, star_table, apod), with starmask
-    the combined attenuation-zone mask when the files carry a
-    starmask extension (getimages --starsub) and None
-    otherwise, and the star census and taper width for the
-    mask map (None and 0 without starsub)
+    (coadds, wcs, starmask, star_table, apod, tract_bounds),
+    with starmask the combined attenuation-zone mask when the
+    files carry a starmask extension (getimages --starsub) and
+    None otherwise, the star census and taper width for the
+    footprint (None and 0 without starsub), and the tract
+    inner sky bounds from the header
     """
     coadds = []
     starmask = None
@@ -37,10 +38,16 @@ def load_coadds_files(patch_dir, tract, patch, bands):
             sm = coadd._starmask >= 1
             starmask = sm if starmask is None \
                 else (starmask | sm)
-    wcs = FileWcs(coadds[0].hdr)
+    hdr = coadds[0].hdr
+    wcs = FileWcs(hdr)
+    tract_bounds = (
+        hdr['TRAMIN'], hdr['TRAMAX'],
+        hdr['TDECMIN'], hdr['TDECMAX'],
+    )
     return (
         coadds, wcs, starmask,
         coadds[0]._star_table, coadds[0]._apod,
+        tract_bounds,
     )
 
 

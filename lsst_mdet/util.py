@@ -1,7 +1,6 @@
 """
 small shared utilities
 """
-from .defaults import OVERLAP_HIGH, OVERLAP_LOW
 
 
 def get_stamp(image, x, y, stamp_size):
@@ -73,12 +72,3 @@ def _get_bound(x, stamp_size, imsize):
         raise IndexError('out of bounds')
 
     return xstart, xend
-
-
-def get_primary(x, y):
-    return (
-        (x > OVERLAP_LOW)
-        & (x < OVERLAP_HIGH)
-        & (y > OVERLAP_LOW)
-        & (y < OVERLAP_HIGH)
-    )

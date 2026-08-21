@@ -9,7 +9,7 @@ from .defaults import MIN_GOOD_FRAC
 def write_output(
     fname,
     st,
-    cell_info,
+    cell_meta,
     tract,
     patch,
     model,
@@ -47,7 +47,7 @@ def write_output(
     with rustfits.FITS(fname, 'w+') as fits:
         fits.write_table(st, extname='cat', compress=True)
         fits.write_table(meta, extname='meta', compress=True)
-        fits.write_table(cell_info, extname='cell_info', compress=True)
+        fits.write_table(cell_meta, extname='cell_meta', compress=True)
 
 
 def write_patch_files(

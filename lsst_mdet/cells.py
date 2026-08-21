@@ -2,9 +2,12 @@
 mbobs construction from butler cell coadds
 """
 import numpy as np
-from .defaults import DM_OUT, MIN_GOOD_FRAC, OVERLAP
+from .defaults import (
+    DM_OUT, MIN_GOOD_FRAC, CELL_OVERLAP,
+    CELL_OVERLAP_HIGH, CELL_OVERLAP_LOW, CELL_SIZE,
+)
 from .detect import get_detect_noise, make_kernel
-from .structs import get_cell_info
+from .structs import get_cell_meta
 from .wcs import get_cell_jacobian
 
 
@@ -24,21 +27,21 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
 
     Returns
     -------
-    mbobs, cell_info:
+    mbobs, cell_meta:
         The MultiBandObsList and a cell info struct (see structs.py)
     """
 
     import ngmix
 
     nband = len(deep_coadds)
-    cell_info = get_cell_info(nband)
-    cell_info['cell_i'] = cell_i
-    cell_info['cell_j'] = cell_j
+    cell_meta = get_cell_meta(nband)
+    cell_meta['cell_i'] = cell_i
+    cell_meta['cell_j'] = cell_j
 
     mbobs = ngmix.MultiBandObsList()
 
     for iband, deep_coadd in enumerate(deep_coadds):
-        bbox = deep_coadd.cell_window(cell_i, cell_j, OVERLAP)
+        bbox = deep_coadd.cell_window(cell_i, cell_j, CELL_OVERLAP)
 
         var = deep_coadd.variance[bbox].array.copy()
         mask = deep_coadd.mask[bbox].array[:, :, 0]
@@ -61,7 +64,7 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
 
         w = np.where(good)
         good_frac = w[0].size / var.size
-        cell_info['good_frac'][0, iband] = good_frac
+        cell_meta['good_frac'][0, iband] = good_frac
 
         if good_frac > MIN_GOOD_FRAC:
 
@@ -119,10 +122,10 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
             break
 
     if len(mbobs) < len(deep_coadds):
-        return None, cell_info
+        return None, cell_meta
     else:
-        cell_info['kept'] = True
-        return mbobs, cell_info
+        cell_meta['kept'] = True
+        return mbobs, cell_meta
 
 
 def _make_cell_obs(image, var, good, noise, mfrac, psf_image, jacobian):
@@ -218,10 +221,12 @@ def load_coadds_butler(butler, tract, patch, bands,
     load the deep coadds for a patch from the butler, with the
     optional star subtraction and background redetermination
     applied in that order.  Returns
-    (coadds, wcs, starmask, star_table, apod) with the coadds
-    wrapped for pull_mbobs, the wcs wrapped for the jacobian
-    helper, and the star census and taper width for the mask
-    map (None and 0 without starsub)
+    (coadds, wcs, starmask, star_table, apod, tract_bounds)
+    with the coadds wrapped for pull_mbobs, the wcs wrapped
+    for the jacobian helper, the star census and taper width
+    for the footprint (None and 0 without starsub), and the
+    tract inner sky bounds for the primary cut and the
+    footprint trim
     """
     from .background import redo_background
     from .defaults import SKYMAP_VERS
@@ -230,7 +235,10 @@ def load_coadds_butler(butler, tract, patch, bands,
     from .wcs import ButlerWcs
 
     skymap = butler.get("skyMap", skymap=SKYMAP_VERS)
-    wcs = ButlerWcs(skymap[tract].wcs)
+
+    tract_info = skymap[tract]
+    tract_bounds = get_tract_bounds(tract_info)
+    wcs = ButlerWcs(tract_info.wcs)
 
     coadds = []
     gaia = None
@@ -271,7 +279,7 @@ def load_coadds_butler(butler, tract, patch, bands,
         apod = APOD_STARS
         print(f'union star mask fraction {starmask.mean():.3f}')
 
-    return coadds, wcs, starmask, star_table, apod
+    return coadds, wcs, starmask, star_table, apod, tract_bounds
 
 
 def make_psf_cube(deep_coadd, xs, ys):
@@ -336,3 +344,100 @@ def make_psf_cube(deep_coadd, xs, ys):
             psf_stack[k] = kim
             cells['ok'][k] = 1
     return psf_stack, cells
+
+
+def get_cell_primary(x, y):
+    """
+    Returns True if x, y are in the primary region of the cell,
+    False if in the overlap region
+    """
+    return (
+        (x > CELL_OVERLAP_LOW)
+        & (x < CELL_OVERLAP_HIGH)
+        & (y > CELL_OVERLAP_LOW)
+        & (y < CELL_OVERLAP_HIGH)
+    )
+
+
+def get_tract_bounds(tract_info):
+    """
+    the tract inner sky region as plain
+    (ra_min, ra_max, dec_min, dec_max) degrees.  The ra range
+    runs from ra_min to ra_max in the direction of increasing
+    ra, wrapping through 360 when ra_max < ra_min (a sphgeom
+    lon interval convention)
+
+    Parameters
+    ----------
+    tract_info: TractInfo
+        From skymap[tract]
+    """
+    ip = tract_info.inner_sky_region
+    return (
+        ip.getLon().getA().asDegrees(),
+        ip.getLon().getB().asDegrees(),
+        ip.getLat().getA().asDegrees(),
+        ip.getLat().getB().asDegrees(),
+    )
+
+
+def get_tract_primary(tract_bounds, ra, dec):
+    """
+    True where (ra, dec) is within the tract inner region:
+    a box bounded by lines of constant ra and constant dec.
+
+    The RA range runs from ra_min to ra_max in the direction
+    of *increasing* ra, wrapping through 360 if
+    ra_max < ra_min.
+
+    Parameters
+    ----------
+    tract_bounds: (ra_min, ra_max, dec_min, dec_max)
+        From get_tract_bounds in butler mode or the patch file
+        header in file mode
+    ra, dec: arrays
+        positions in degrees
+    """
+    ra_min, ra_max, dec_min, dec_max = tract_bounds
+
+    width = (ra_max - ra_min) % 360.0
+    if width == 0.0 and ra_max != ra_min:
+        width = 360.0          # full wrap, e.g. 0 -> 360
+
+    dra = (np.asarray(ra) - ra_min) % 360.0
+
+    return (dra <= width) & (dec >= dec_min) & (dec <= dec_max)
+
+
+def get_cell_healsparse_polygon(bbox, cell_i, cell_j, wcs):
+    """
+    Polygon over the inner footprint of cell (cell_i, cell_j).
+
+    The corners come from the same arithmetic as the cell
+    windows: patch outer bbox start plus index * CELL_SIZE,
+    verified against skymap CellInfo.getInnerBBox
+
+    Parameters
+    ----------
+    bbox: bbox
+        The patch (outer) bounding box, tract frame
+    cell_i, cell_j: int
+        The cell indices, i along y and j along x
+    wcs: ButlerWcs or FileWcs
+
+    Returns
+    -------
+    healsparse.Polygon
+    """
+    from .hmaps import make_patch_polygon
+
+    x0 = bbox.x.start + cell_j * CELL_SIZE
+    y0 = bbox.y.start + cell_i * CELL_SIZE
+    xv = np.array(
+        [x0, x0 + CELL_SIZE, x0 + CELL_SIZE, x0], dtype='f8',
+    )
+    yv = np.array(
+        [y0, y0, y0 + CELL_SIZE, y0 + CELL_SIZE], dtype='f8',
+    )
+    ra, dec = wcs.pixelToSkyArray(xv, yv, degrees=True)
+    return make_patch_polygon(ra=ra, dec=dec)

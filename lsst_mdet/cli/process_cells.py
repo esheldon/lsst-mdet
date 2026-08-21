@@ -3,9 +3,16 @@ cli/process_cells
 """
 import numpy as np
 from ..apodize import apodize_mbobs
-from ..cells import load_coadds_butler, pull_mbobs
+from ..cells import (
+    load_coadds_butler, pull_mbobs, get_cell_healsparse_polygon,
+    get_tract_primary,
+)
 from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO
-from ..hmaps import make_mask_map
+from ..hmaps import (
+    make_empty_footprint,
+    mask_stars_in_footprint,
+    trim_footprint_to_tract_bounds,
+)
 from ..patchfiles import load_coadds_files
 from ..io import write_output
 from ..pipeline import do_metacal_and_process, process_one_mbobs
@@ -72,6 +79,8 @@ def main(
 
     rng = np.random.RandomState(seed)
 
+    footprint = make_empty_footprint()
+
     dlist = []
 
     bands = ['r', 'i', 'z']
@@ -83,7 +92,7 @@ def main(
                 'operations; the patch files already carry '
                 'their effects'
             )
-        deep_coadds, wcs, starmask, star_table, apod = (
+        deep_coadds, wcs, starmask, star_table, apod, tract_bounds = (
             load_coadds_files(
                 patch_dir=patch_dir, tract=tract, patch=patch,
                 bands=bands,
@@ -93,7 +102,7 @@ def main(
         from lsst.daf.butler import Butler
 
         butler = Butler(repo, collections=collections)
-        deep_coadds, wcs, starmask, star_table, apod = (
+        deep_coadds, wcs, starmask, star_table, apod, tract_bounds = (
             load_coadds_butler(
                 butler=butler, tract=tract, patch=patch,
                 bands=bands, redo_bg=redo_bg, starsub=starsub,
@@ -106,7 +115,7 @@ def main(
     else:
         mrng_i = range(1, 21)
 
-    cell_info_list = []
+    cell_meta_list = []
     ncell = 0
     nkeep = 0
     for cell_i in mrng_i:
@@ -120,16 +129,16 @@ def main(
         for cell_j in mrng_j:
             ncell += 1
 
-            mbobs, cell_info = pull_mbobs(
+            mbobs, cell_meta = pull_mbobs(
                 deep_coadds=deep_coadds,
                 cell_i=cell_i,
                 cell_j=cell_j,
                 wcs=wcs,
                 starmask=starmask,
             )
-            cell_info['tract'] = tract
-            cell_info['patch'] = patch
-            cell_info_list.append(cell_info)
+            cell_meta['tract'] = tract
+            cell_meta['patch'] = patch
+            cell_meta_list.append(cell_meta)
 
             if mbobs is None:
                 continue
@@ -165,6 +174,14 @@ def main(
             )
             cat['cell_i'] = cell_i
             cat['cell_j'] = cell_j
+
+            footprint |= get_cell_healsparse_polygon(
+                bbox=deep_coadds[0].bbox,
+                cell_i=cell_i,
+                cell_j=cell_j,
+                wcs=wcs,
+            )
+
             nkeep += 1
             dlist.append(cat)
 
@@ -172,13 +189,19 @@ def main(
 
     print(f'kept {nkeep}/{ncell} {nkeep / ncell:g}')
 
-    cell_info = np.concatenate(cell_info_list)
+    cell_meta = np.concatenate(cell_meta_list)
     st = np.concatenate(dlist)
+
+    # tracts overlap: primary objects must also be within the
+    # tract inner boundary
+    st['is_primary'] &= get_tract_primary(
+        tract_bounds, st['ra'], st['dec'],
+    )
 
     write_output(
         fname=outfile,
         st=st,
-        cell_info=cell_info,
+        cell_meta=cell_meta,
         tract=tract,
         patch=patch,
         model=model,
@@ -190,16 +213,23 @@ def main(
         s2_detect=s2_detect,
     )
 
-    hmap = make_mask_map(
-        wcs=wcs,
-        bbox=deep_coadds[0].bbox,
-        cell_info=cell_info,
-        star_table=star_table,
-        apod=apod,
-    )
-    mask_fname = outfile.replace('.fits', '-mask.hsp')
-    print('writing:', mask_fname)
-    hmap.write(mask_fname, clobber=True)
+    if star_table is not None and star_table.size > 0:
+        mask_stars_in_footprint(
+            footprint=footprint,
+            wcs=wcs,
+            bbox=deep_coadds[0].bbox,
+            star_table=star_table,
+            apod=apod,
+        )
+
+    # tracts overlap: trim to the inner boundary, the same
+    # test as the is_primary cut
+    trim_footprint_to_tract_bounds(footprint, tract_bounds)
+
+    footprint_fname = outfile.replace('.fits', '-footprint.hsp')
+
+    print('writing:', footprint_fname)
+    footprint.write(footprint_fname, clobber=True)
 
 
 def main_cli():

@@ -132,7 +132,7 @@ def _init_struct(dtype, n):
     return output
 
 
-def get_cell_info(nband, n=1):
+def get_cell_meta(nband, n=1):
     dtype = [
         ('tract', 'i4'),
         ('patch', 'i4'),

@@ -12,7 +12,7 @@ from .metacal import do_all_metacal
 from .mfrac import sample_mfrac, smooth_mfrac_map
 from .psf import _set_mcal_psfs, fit_and_set_mcal_psfs
 from .structs import get_struct
-from .util import get_primary
+from .cells import get_cell_primary
 
 
 def do_metacal_and_process(mbobs, model, deblend, s2_detect, rng, show):
@@ -73,13 +73,6 @@ def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):
 
         _set_mcal_psfs(st=cat, psf_res=psf_res)
 
-        # if TRIM_TO_PRIMARY:
-        #     # when deblending we need to process all and trim
-        #     # afterward
-        #     w, = np.where(is_primary)
-        #     sxcat = sxcat[w]
-        #     is_primary = is_primary[w]
-
         if not deblend:
             do_single_fits(
                 mbobs=mbobs,
@@ -126,5 +119,5 @@ def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):
         mfrac_map, cat['xcell'], cat['ycell'],
     )
 
-    cat['is_primary'] = get_primary(cat['xcell'], cat['ycell'])
+    cat['is_primary'] = get_cell_primary(cat['xcell'], cat['ycell'])
     return cat

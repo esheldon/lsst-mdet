@@ -8,7 +8,7 @@ import numpy as np
 from lsst.daf.butler import Butler
 
 from ..background import redo_background
-from ..cells import get_cell_centers, make_psf_cube
+from ..cells import get_cell_centers, get_tract_bounds, make_psf_cube
 from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
 from ..gaia import GMAX, fetch_gaia_or_none
 from ..io import write_patch_files
@@ -95,7 +95,9 @@ def main():
 
     butler = Butler(args.repo, collections=args.collections)
     skymap = butler.get("skyMap", skymap=SKYMAP_VERS)
-    wcs = skymap[tract].wcs
+    tract_info = skymap[tract]
+    wcs = tract_info.wcs
+    tract_bounds = get_tract_bounds(tract_info)
 
     gaia = None
     gaia_failed = False
@@ -160,6 +162,12 @@ def main():
             continue
 
         hdr = get_wcs_header(wcs, deep_coadd.bbox, tract, patch)
+        # tract inner sky bounds, for the primary cut and the
+        # footprint trim in file-mode processing
+        hdr['TRAMIN'] = tract_bounds[0]
+        hdr['TRAMAX'] = tract_bounds[1]
+        hdr['TDECMIN'] = tract_bounds[2]
+        hdr['TDECMAX'] = tract_bounds[3]
 
         print('image std:', np.nanstd(deep_coadd.image.array))
         print('noise std:',
