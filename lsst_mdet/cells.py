@@ -217,7 +217,8 @@ class ButlerCoadd(object):
 
 def load_coadds_butler(butler, tract, patch, bands,
                        redo_bg=False, starsub=False,
-                       gaia_file=None):
+                       gaia_file=None, gsub=None,
+                       apod_stars=True):
     """
     load the deep coadds for a patch from the butler, with the
     optional star subtraction and background redetermination
@@ -231,11 +232,15 @@ def load_coadds_butler(butler, tract, patch, bands,
     """
     from .background import redo_background
     from .defaults import SKYMAP_VERS
-    from .gaia import fetch_gaia, read_gaia_parquet
+    from .gaia import GMAX, fetch_gaia, read_gaia_parquet
     from .starsub import (
-        APOD_STARS, BG_GROW, apply_star_taper, handle_stars,
+        APOD_STARS, BG_GROW, GSUB, apply_star_taper,
+        handle_stars,
     )
     from .wcs import ButlerWcs
+
+    if gsub is None:
+        gsub = GSUB
 
     skymap = butler.get("skyMap", skymap=SKYMAP_VERS)
 
@@ -260,18 +265,23 @@ def load_coadds_butler(butler, tract, patch, bands,
 
         if starsub:
             if gaia is None:
+                gmax = max(gsub, GMAX)
                 if gaia_file is not None:
                     gaia = read_gaia_parquet(
                         gaia_file, wcs, deep_coadd.bbox,
+                        gmax=gmax,
                     )
                 else:
-                    gaia = fetch_gaia(wcs, deep_coadd.bbox)
+                    gaia = fetch_gaia(
+                        wcs, deep_coadd.bbox, gmax=gmax,
+                    )
             # the getimages sequence: subtract, background,
             # then the taper LAST, so the star holes stay
             # exactly zero (tapering first would leave -bkg
             # inside them after the background subtraction)
             starmask_b, stable_b, dstar = handle_stars(
-                deep_coadd, wcs, gaia, subtract=True,
+                deep_coadd, wcs, gaia, gsub=gsub,
+                subtract=True,
             )
             if star_table is None:
                 # the census is the same in every band up to
@@ -281,7 +291,10 @@ def load_coadds_butler(butler, tract, patch, bands,
                 redo_background(
                     deep_coadd, starmask=dstar < BG_GROW,
                 )
-            apply_star_taper(deep_coadd, dstar, width=APOD_STARS)
+            if apod_stars:
+                apply_star_taper(
+                    deep_coadd, dstar, width=APOD_STARS,
+                )
             starmasks.append(dstar < APOD_STARS)
         elif redo_bg:
             redo_background(deep_coadd, starmask=None)
@@ -292,7 +305,8 @@ def load_coadds_butler(butler, tract, patch, bands,
     apod = 0.0
     if starsub:
         starmask = np.logical_or.reduce(starmasks)
-        apod = APOD_STARS
+        if apod_stars:
+            apod = APOD_STARS
         print(f'union star mask fraction {starmask.mean():.3f}')
 
     return coadds, wcs, starmask, star_table, apod, tract_bounds

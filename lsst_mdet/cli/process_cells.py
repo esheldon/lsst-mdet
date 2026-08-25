@@ -8,6 +8,7 @@ from ..cells import (
     get_tract_primary,
 )
 from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO
+from ..starsub import GSUB
 from ..hmaps import (
     make_empty_footprint,
     mask_stars_in_footprint,
@@ -51,12 +52,33 @@ def get_args():
     )
     parser.add_argument('--deblend', action='store_true')
     parser.add_argument('--s2-detect', action='store_true')
-    parser.add_argument('--redo-bg', action='store_true')
     parser.add_argument(
-        '--starsub', action='store_true',
+        '--redo-bg', action=argparse.BooleanOptionalAction,
+        default=None,
+        help='redo the background determination (butler mode; '
+             'on by default there, matching getimages). '
+             'Refused with --patch-dir, where the patch files '
+             'already carry it',
+    )
+    parser.add_argument(
+        '--starsub', action=argparse.BooleanOptionalAction,
+        default=False,
         help='subtract and mask the Gaia stars at the patch '
-             'level (getimages_patch machinery) before any '
-             'background redo',
+             'level before the background redo (butler mode; '
+             'refused with --patch-dir)',
+    )
+    parser.add_argument(
+        '--gsub', type=float, default=GSUB,
+        help='subtract and mask Gaia stars brighter than '
+             'this; the download depth follows it (butler '
+             'mode only)',
+    )
+    parser.add_argument(
+        '--apod-stars', action=argparse.BooleanOptionalAction,
+        default=True,
+        help='zero the star-mask regions in the image and '
+             'noise planes with a smooth taper (butler mode '
+             'only)',
     )
     parser.add_argument('--mdet', action='store_true')
     parser.add_argument('--progress', action='store_true')
@@ -81,6 +103,8 @@ def main(
     repo=BUTLER_REPO,
     collections=BUTLER_COLLECTIONS,
     gaia_file=None,
+    gsub=GSUB,
+    apod_stars=True,
 ):
     from tqdm import trange
 
@@ -99,6 +123,11 @@ def main(
                 'operations; the patch files already carry '
                 'their effects'
             )
+        redo_bg = False
+    elif redo_bg is None:
+        # match the getimages default: the background is
+        # redone unless explicitly disabled
+        redo_bg = True
         deep_coadds, wcs, starmask, star_table, apod, tract_bounds = (
             load_coadds_files(
                 patch_dir=patch_dir, tract=tract, patch=patch,
@@ -113,7 +142,8 @@ def main(
             load_coadds_butler(
                 butler=butler, tract=tract, patch=patch,
                 bands=bands, redo_bg=redo_bg, starsub=starsub,
-                gaia_file=gaia_file,
+                gaia_file=gaia_file, gsub=gsub,
+                apod_stars=apod_stars,
             )
         )
 
@@ -267,6 +297,8 @@ def main_cli():
         repo=_args.repo,
         collections=_args.collections,
         gaia_file=_args.gaia_file,
+        gsub=_args.gsub,
+        apod_stars=_args.apod_stars,
     )
 
 
