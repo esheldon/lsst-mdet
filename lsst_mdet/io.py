@@ -157,6 +157,7 @@ def write_output(
 def write_patch_files(
     fname, deep_coadd, hdr, psf_stack, cells, ncellx, ncelly,
     cell_size, starmask_plane=None, apod=0.0, star_table=None,
+    skyvar=None,
     gsub=None, minrad=None,
 ):
     """
@@ -187,6 +188,9 @@ def write_patch_files(
         star mask (zeroed when apod > 0)
     apod: float, optional
         The taper width recorded in the starmask header
+    skyvar: array, optional
+        The sky-variance map from redo_background, for the
+        pixel weights downstream
     star_table: array with fields, optional
         The gaia census with fitted amplitudes
     gsub, minrad: optional
@@ -255,4 +259,10 @@ def write_patch_files(
                 star_table,
                 extname='gaia_stars',
                 header={'GSUB': gsub, 'MINRAD': minrad},
+            )
+        if skyvar is not None:
+            fits.write_image(
+                skyvar,
+                extname='skyvar',
+                compress='gzip_2',
             )

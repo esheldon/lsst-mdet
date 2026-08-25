@@ -18,12 +18,14 @@ def load_coadds_files(patch_dir, tract, patch, bands):
     """
     load a patch from getimages FITS output: the file-backed
     counterpart of the butler loader.  Returns
-    (coadds, wcs, starmask, star_table, apod, tract_bounds),
-    with starmask the combined attenuation-zone mask when the
-    files carry a starmask extension (getimages --starsub) and
-    None otherwise, the star census and taper width for the
-    footprint (None and 0 without starsub), and the tract
-    inner sky bounds from the header
+    (coadds, wcs, starmask, star_table, apod, tract_bounds,
+    skyvars), with starmask the combined attenuation-zone mask
+    when the files carry a starmask extension (getimages
+    --starsub) and None otherwise, the star census and taper
+    width for the footprint (None and 0 without starsub), the
+    tract inner sky bounds from the header, and the per-band
+    sky-variance maps for the pixel weights (None entries for
+    diagnostic no-redo-bg files)
     """
     coadds = []
     starmask = None
@@ -44,10 +46,16 @@ def load_coadds_files(patch_dir, tract, patch, bands):
         hdr['TRAMIN'], hdr['TRAMAX'],
         hdr['TDECMIN'], hdr['TDECMAX'],
     )
+    skyvars = [c._skyvar for c in coadds]
+    if any(sv is None for sv in skyvars):
+        print('WARNING: no skyvar extension (diagnostic '
+              'no-redo-bg files); pixel weights will use the '
+              'raw variance plane, which includes object '
+              'poisson noise')
     return (
         coadds, wcs, starmask,
         coadds[0]._star_table, coadds[0]._apod,
-        tract_bounds,
+        tract_bounds, skyvars,
     )
 
 
@@ -151,6 +159,9 @@ class FilePatchCoadd(object):
             self._star_table = None
             if 'gaia_stars' in extnames:
                 self._star_table = f['gaia_stars'].read()
+            self._skyvar = None
+            if 'skyvar' in extnames:
+                self._skyvar = f['skyvar'].read()
 
         self.hdr = hdr
         # LTV records the afw subimage origin: patch = tract - x0

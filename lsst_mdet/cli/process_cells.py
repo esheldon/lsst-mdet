@@ -128,23 +128,21 @@ def main(
         # match the getimages default: the background is
         # redone unless explicitly disabled
         redo_bg = True
-        deep_coadds, wcs, starmask, star_table, apod, tract_bounds = (
-            load_coadds_files(
-                patch_dir=patch_dir, tract=tract, patch=patch,
-                bands=bands,
-            )
+        (deep_coadds, wcs, starmask, star_table, apod,
+         tract_bounds, skyvars) = load_coadds_files(
+            patch_dir=patch_dir, tract=tract, patch=patch,
+            bands=bands,
         )
     else:
         from lsst.daf.butler import Butler
 
         butler = Butler(repo, collections=collections)
-        deep_coadds, wcs, starmask, star_table, apod, tract_bounds = (
-            load_coadds_butler(
-                butler=butler, tract=tract, patch=patch,
-                bands=bands, redo_bg=redo_bg, starsub=starsub,
-                gaia_file=gaia_file, gsub=gsub,
-                apod_stars=apod_stars,
-            )
+        (deep_coadds, wcs, starmask, star_table, apod,
+         tract_bounds, skyvars) = load_coadds_butler(
+            butler=butler, tract=tract, patch=patch,
+            bands=bands, redo_bg=redo_bg, starsub=starsub,
+            gaia_file=gaia_file, gsub=gsub,
+            apod_stars=apod_stars,
         )
 
     if progress:
@@ -173,6 +171,7 @@ def main(
                 cell_j=cell_j,
                 wcs=wcs,
                 starmask=starmask,
+                skyvars=skyvars,
             )
             cell_meta['tract'] = tract
             cell_meta['patch'] = patch
