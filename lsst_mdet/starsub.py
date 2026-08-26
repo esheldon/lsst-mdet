@@ -23,14 +23,60 @@ APOD_STARS = 12.0   # taper width outside the star mask
 
 # empirical extended star template
 TMPL_HALF = 50       # measured stamp half size
-TMPL_OUT_HALF = 250  # power-law halo extension half size
+TMPL_OUT_HALF = 250  # minimum halo extension half size
+# per-star extent: TMPL_EXT_FACTOR times the mask radius,
+# capped.  A fixed 250 px edge leaves a G~10 star's halo
+# (~0.5 sigma there) unsubtracted beyond it, visible as a
+# ring at the stamp edge
+TMPL_EXT_FACTOR = 3.0
+TMPL_OUT_MAX = 900
 TMPL_NSTAR = 60
 TMPL_GMIN = GSAT + 0.3  # template stars: bright but unsaturated
 TMPL_GMAX = 17.5        # preferred faint limit
 TMPL_GMAX_CAP = 19.0    # adaptive faint-limit cap (census depth)
 TMPL_MIN_CAND = 20      # extend the faint limit below this
 TMPL_MIN_STAMPS = 10    # hard minimum usable stamps
-HALO_SLOPE = -3.7   # optics halo power law, for corrupted fits
+# inner (turbulence-wing) power law fallback, for corrupted
+# fits, measured with the pedestal-robust joint fit
+HALO_SLOPE = -4.0
+
+# the outer aureole (atmospheric + instrumental scattering):
+# a second, flatter power law that dominates beyond ~60 px.
+# Measured per band from the mid-bright stars when the field
+# allows, with a tiered fallback for sparse fields
+AUR_GMIN = 13.0      # aureole measurement stars
+AUR_GMAX = 15.5
+AUR_RMAX = 250.0     # fit limit: beyond this the ambient
+#                      source-carpet floor takes over
+AUR_SLOPE = -2.0     # canonical scattering-aureole fallback
+AUR_SLOPE_MIN = -3.5  # tier-1 fitted-slope guard
+AUR_SLOPE_MAX = -1.5
+AUR_MIN_STARS = 10   # tier 1 below this falls to tier 2
+AUR_BREAK = 80.0     # tier-3 continuity radius
+AUR_AMP_GUARD = 10.0  # fitted amp within this factor of the
+#                       continuity value, else tier 3
+
+# local restoration of the stored 'object' background model:
+# that model intentionally absorbs star wings and scattered
+# light; adding it back around the bright stars restores the
+# wing light so the template can subtract it as star flux.
+# ALL saturated stars need it: with the old G < 13 cut the
+# mid-bright (13-15.2) rings measured the absorbed remainder,
+# the flux relation disagreed, and the amplitude floor
+# over-subtracted (worst in z, where the red halo spreads the
+# ring amplitudes)
+RESTORE_GMAX = GSAT    # restore around stars brighter than this
+RESTORE_RAD = 400.0    # full restoration within this distance
+#                        of the bright-star masks
+RESTORE_TAPER = 100.0  # taper width down to zero
+
+# mask-aware preliminary background, applied after the
+# restoration and before the template/subtraction: flattens
+# the sky the template stack and amplitude anchors sit on,
+# without chasing the (excluded) star wings
+PRE_BW = 64            # background box size
+PRE_GROW = 12          # exclusion beyond every star mask
+PRE_GROW_BRIGHT = 128  # exclusion beyond the bright-star masks
 
 NPASS = 3           # joint amplitude passes
 
@@ -114,7 +160,7 @@ def own_component_ids(comps, ix, iy):
     return ids
 
 
-def build_star_mask(stars, mask0):
+def build_star_mask(stars, mask0, verbose=True):
     """
     floored magnitude-scaled circles at every census star plus
     the SAT/INTRP components of the saturated ones
@@ -143,7 +189,8 @@ def build_star_mask(stars, mask0):
         )
     if star_ids:
         starmask |= np.isin(comps, sorted(star_ids))
-    print(f'    star mask fraction {starmask.mean():.3f}')
+    if verbose:
+        print(f'    star mask fraction {starmask.mean():.3f}')
     return starmask, comps
 
 
@@ -262,41 +309,84 @@ def denoise_template(tmpl):
 
 def fit_halo_slope(prof):
     """
-    power-law fit to the well-measured 25-44 px profile;
-    crowding can corrupt it, in which case fall back to the
-    optics slope anchored to the same radii
+    joint power-law plus sky-pedestal fit, a * r^s + c, to the
+    well-measured 22-50 px profile.  The per-stamp sky
+    pedestals survive the median stack and bias a plain
+    log-log fit shallow (and base-dependent); fitting the
+    pedestal makes the slope background-independent.  Returns
+    (slope, ln_a, pedestal) with ln_a the pedestal-free
+    amplitude; a corrupted fit falls back to HALO_SLOPE
+    anchored to the same radii
     """
-    rfit = np.arange(25, min(45, prof.size))
-    pfit = prof[rfit]
-    wpos = pfit > 0                # log needs positive values
-    slope, ln_a = np.polyfit(
-        np.log(rfit[wpos]), np.log(pfit[wpos]), 1,
-    )
-    if not (-5.0 < slope < -2.5):
+    rfit = np.arange(22, min(51, prof.size)).astype(float)
+    pfit = prof[rfit.astype(int)]
+
+    def linfit(s):
+        basis = np.vstack([rfit ** s, np.ones(rfit.size)]).T
+        coef, res, *_ = np.linalg.lstsq(basis, pfit, rcond=None)
+        rss = float(res[0]) if res.size else float(
+            np.sum((pfit - basis @ coef) ** 2),
+        )
+        return rss, coef[0], coef[1]
+
+    best = None
+    for s in np.arange(-6.0, -2.0, 0.01):
+        rss, a, c = linfit(s)
+        if best is None or rss < best[0]:
+            best = (rss, s, a, c)
+    _, slope, a, ped = best
+    if not (-5.0 < slope < -2.5) or not a > 0:
         print(f'    template slope {slope:.2f} out of range, '
               f'using {HALO_SLOPE}')
         slope = HALO_SLOPE
-        ln_a = np.median(
-            np.log(pfit[wpos]) - slope * np.log(rfit[wpos]),
-        )
-    return slope, ln_a
+        _, a, ped = linfit(slope)
+        if not a > 0:
+            # last resort: anchor the fallback law to the raw
+            # profile medians, ignoring the pedestal
+            wpos = pfit > 0
+            ped = 0.0
+            a = float(np.exp(np.median(
+                np.log(pfit[wpos])
+                - slope * np.log(rfit[wpos]),
+            )))
+    return slope, float(np.log(a)), float(ped)
 
 
-def extend_template_halo(tmpl, slope, ln_a):
+def template_out_half(gmag):
+    """
+    per-star template stamp half size: the analytic halo
+    extends to TMPL_EXT_FACTOR times the mask radius (floored
+    at TMPL_OUT_HALF, capped at TMPL_OUT_MAX) so the brightest
+    stars' wings are subtracted beyond the old fixed edge
+    """
+    return int(np.clip(
+        TMPL_EXT_FACTOR * circle_radius(gmag),
+        TMPL_OUT_HALF, TMPL_OUT_MAX,
+    ))
+
+
+def extend_template_halo(tmpl, slope, ln_a, aur_slope, aur_amp,
+                         out_half=None):
     """
     embed the measured template in a larger stamp whose outer
-    halo is the fitted power law, with a smooth junction at
-    40-44 px and an edge taper to zero
+    halo is the fitted inner power law plus the scattering
+    aureole, with a smooth junction at 40-44 px and an edge
+    taper to zero
     """
     half = TMPL_HALF
-    out_half = TMPL_OUT_HALF
+    if out_half is None:
+        out_half = TMPL_OUT_HALF
     big = np.zeros((2 * out_half + 1, 2 * out_half + 1))
     big[out_half - half:out_half + half + 1,
         out_half - half:out_half + half + 1] = tmpl
     gy, gx = np.mgrid[-out_half:out_half + 1,
                       -out_half:out_half + 1]
     rr = np.hypot(gy, gx)          # radius in the big stamp
-    halo = np.exp(ln_a) * np.maximum(rr, 1.0) ** slope
+    rc = np.maximum(rr, 1.0)
+    halo = (
+        np.exp(ln_a) * rc ** slope
+        + aur_amp * rc ** aur_slope
+    )
     big[rr >= 44.0] = halo[rr >= 44.0]
     # linear blend from the measured template into the halo
     # over the 40-44 px junction
@@ -311,21 +401,217 @@ def extend_template_halo(tmpl, slope, ln_a):
     return big * taper
 
 
-def build_template(image, good, seg, gaia, x, y):
+def measure_wing_profiles(image, good, seg, stars):
+    """
+    flux-normalized azimuthal wing profiles of the mid-bright
+    (AUR_GMIN <= G < AUR_GMAX) census stars, medianed across
+    stars in common log-spaced radial bins outside each star's
+    own mask.  Other detections and other stars' zones are
+    excluded; each star is normalized by 10^(-0.4 G) so the
+    curves overlay when the wings are self-similar.
+
+    Returns (rmid, med, count, nstars) with med NaN where
+    fewer than 3 stars contribute
+    """
+    ny, nx = image.shape
+    edges = np.unique(np.round(np.logspace(
+        np.log10(40.0), np.log10(AUR_RMAX + 10), 12,
+    )))
+    rmid = 0.5 * (edges[:-1] + edges[1:])
+
+    sel = (
+        (stars['on_image'] == 1)
+        & (stars['G'] >= AUR_GMIN) & (stars['G'] < AUR_GMAX)
+    )
+    profs = []
+    for st in stars[sel]:
+        gmag = float(st['G'])
+        rad = float(circle_radius(gmag))
+        fnorm = 10.0 ** (-0.4 * gmag)
+        icx, icy = int(round(st['x'])), int(round(st['y']))
+        m = int(AUR_RMAX + 20)
+        x0, x1 = max(0, icx - m), min(nx, icx + m + 1)
+        y0, y1 = max(0, icy - m), min(ny, icy + m + 1)
+        gy, gx = np.mgrid[y0:y1, x0:x1]
+        rr = np.hypot(gy - st['y'], gx - st['x'])
+        segc = seg[y0:y1, x0:x1]
+        # keep the star's own detection components
+        own = set(np.unique(segc[rr <= rad + 2])) - {0}
+        ok = good[y0:y1, x0:x1] & (
+            (segc == 0) | np.isin(segc, sorted(own))
+        )
+        # other stars' mask circles out
+        for ot in stars:
+            if (ot['x'] == st['x']) and (ot['y'] == st['y']):
+                continue
+            orad = float(circle_radius(float(ot['G'])))
+            dx = float(ot['x']) - icx
+            dy = float(ot['y']) - icy
+            if abs(dx) > m + orad or abs(dy) > m + orad:
+                continue
+            orr = np.hypot(
+                gy - ot['y'], gx - ot['x'],
+            )
+            ok &= orr > orad + APOD_STARS
+
+        prof = np.full(rmid.size, np.nan)
+        for i, (lo, hi) in enumerate(zip(edges[:-1], edges[1:])):
+            w = (rr >= max(lo, rad + 2)) & (rr < hi) & ok
+            if w.sum() > 100:
+                prof[i] = np.median(
+                    image[y0:y1, x0:x1][w],
+                ) / fnorm
+        if np.isfinite(prof).sum() >= 4:
+            profs.append(prof)
+
+    nstars = len(profs)
+    if nstars == 0:
+        return rmid, np.full(rmid.size, np.nan), \
+            np.zeros(rmid.size, dtype=int), 0
+    profs = np.array(profs)
+    count = np.sum(np.isfinite(profs), axis=0)
+    med = np.full(rmid.size, np.nan)
+    wc = count >= 3
+    if wc.any():
+        med[wc] = np.nanmedian(profs[:, wc], axis=0)
+    return rmid, med, count, nstars
+
+
+def fit_aureole(rmid, med, count, nstars, slope, ln_a):
+    """
+    the outer aureole component, in template units: amplitude
+    b and slope s_aur of b * r^s_aur, added to the inner power
+    law beyond the measured stack.
+
+    Tiered: with AUR_MIN_STARS measured stars both slope and
+    amplitude are fit (the overall flux scale of the measured
+    cloud cancels in the ratio of the two basis coefficients);
+    with fewer, the slope is fixed at AUR_SLOPE and only the
+    amplitude is fit; with nothing measurable the amplitude
+    comes from continuity with the inner law at AUR_BREAK.
+    Fitted amplitudes far from the continuity value fall back
+    to tier 3.
+
+    Returns (aur_slope, aur_amp, tier)
+    """
+    a_in = float(np.exp(ln_a))
+
+    def b_continuity(s_aur):
+        return a_in * AUR_BREAK ** (slope - s_aur)
+
+    w = (
+        np.isfinite(med) & (med > 0) & (count >= 3)
+        & (rmid <= AUR_RMAX)
+    )
+    tier = 3
+    s_aur = AUR_SLOPE
+    b = None
+    if w.sum() >= 3:
+
+        def linfit(s):
+            r = rmid[w]
+            basis = np.vstack([
+                a_in * r ** slope, r ** s,
+            ]).T
+            coef, res, *_ = np.linalg.lstsq(
+                basis, med[w], rcond=None,
+            )
+            rss = float(res[0]) if res.size else float(
+                np.sum((med[w] - basis @ coef) ** 2),
+            )
+            return rss, coef[0], coef[1]
+
+        if nstars >= AUR_MIN_STARS:
+            best = None
+            for s in np.arange(
+                AUR_SLOPE_MIN, AUR_SLOPE_MAX + 1e-9, 0.02,
+            ):
+                rss, k, bb = linfit(s)
+                if best is None or rss < best[0]:
+                    best = (rss, s, k, bb)
+            _, s_fit, k, bb = best
+            if k > 0 and bb > 0:
+                tier, s_aur, b = 1, float(s_fit), bb / k
+            elif k > 0:
+                # a measured non-positive aureole is a
+                # measurement: this image carries no aureole
+                # light (e.g. absorbed by earlier
+                # backgrounds).  Take the smallest allowed
+                # amplitude, never the full continuity prior
+                tier, b = 1, 0.0
+        else:
+            rss, k, bb = linfit(AUR_SLOPE)
+            if k > 0 and bb > 0:
+                tier, b = 2, bb / k
+            elif k > 0:
+                tier, b = 2, 0.0
+
+    if b is not None:
+        # a measured amplitude is always preferred over the
+        # continuity prior: on a base whose wings were partly
+        # absorbed, the prior over-subtracts.  Clip rather
+        # than discard when it strays past the guard
+        bc = b_continuity(s_aur)
+        lo, hi = bc / AUR_AMP_GUARD, bc * AUR_AMP_GUARD
+        if not (lo < b < hi):
+            bclip = float(np.clip(b, lo, hi))
+            print(f'    aureole amp {b:.2e} clipped to '
+                  f'{bclip:.2e} ({AUR_AMP_GUARD}x guard '
+                  f'about continuity {bc:.2e})')
+            b = bclip
+    else:
+        tier = 3
+        s_aur = AUR_SLOPE
+        b = b_continuity(s_aur)
+    return float(s_aur), float(b), tier
+
+
+def build_template(image, good, seg, gaia, x, y, stars):
     """
     empirical extended star template: median stack of bright
     unsaturated Gaia stars centered on their predicted
     positions (registration is a few hundredths of a pixel),
     core-normalized, point-symmetrized, denoised to the
-    azimuthal profile, and extended with a power-law halo
+    azimuthal profile, and extended with a two-component halo:
+    the inner turbulence-wing power law from the stack (joint
+    pedestal-robust fit) plus the flatter scattering aureole
+    measured from the mid-bright stars (tiered fallback on
+    sparse fields)
     """
     sel = select_template_stars(gaia, x, y, image.shape)
     tmpl, nstamp = stack_star_stamps(image, good, seg, x, y, sel)
     tmpl, prof = denoise_template(tmpl)
-    slope, ln_a = fit_halo_slope(prof)
-    big = extend_template_halo(tmpl, slope, ln_a)
+    slope, ln_a, ped = fit_halo_slope(prof)
+    # the sky pedestal is additive and must not scale with a
+    # star's amplitude: remove it from the measured region
+    # (the halo replaces everything beyond the junction)
+    tmpl = tmpl - ped
+
+    rmid, med, count, naur = measure_wing_profiles(
+        image, good, seg, stars,
+    )
+    aur_slope, aur_amp, tier = fit_aureole(
+        rmid, med, count, naur, slope, ln_a,
+    )
+    # the template array is sized for the brightest census
+    # star (plus the stamp shift margin); each star's stamp
+    # windows it to its own extent
+    out_half = TMPL_OUT_HALF
+    if stars.size > 0:
+        out_half = max(
+            template_out_half(float(g)) for g in stars['G']
+        )
+    out_half += 2
+    big = extend_template_halo(
+        tmpl, slope, ln_a, aur_slope, aur_amp,
+        out_half=out_half,
+    )
     print(f'    template: {nstamp} stamps, '
-          f'halo slope {slope:.2f}')
+          f'halo slope {slope:.2f}, '
+          f'pedestal {ped:.1e}, '
+          f'extent {out_half}')
+    print(f'    aureole: slope {aur_slope:.2f} '
+          f'amp {aur_amp:.2e} (tier {tier}, {naur} stars)')
     return big
 
 
@@ -375,19 +661,31 @@ def anchor_ring(rad_grid, usable, local_mask, on_image, rad):
 def make_star_stamp(image, good, comps, tmpl, rr, st, si):
     """
     per-star working set: image window, sub-pixel-shifted
-    template, and amplitude anchor ring.  Returns None for
-    stars whose stamp barely overlaps the image
+    template, and amplitude anchor ring.  The stamp extent
+    scales with brightness (template_out_half), windowing the
+    shared template array centrally; a smaller window gets its
+    own edge taper so the model cannot end in a hard step.
+    Returns None for stars whose stamp barely overlaps the
+    image
     """
     from scipy import ndimage
 
     ny, nx = image.shape
-    half = TMPL_OUT_HALF
+    tmpl_half = (tmpl.shape[0] - 1) // 2
     xk, yk = float(st['x']), float(st['y'])
     gmag = float(st['G'])
+    # the shift margin must fit inside the shared array
+    half = min(template_out_half(gmag), tmpl_half - 2)
     ix, iy = int(round(xk)), int(round(yk))
 
+    # central window of the shared template, with a 2 px
+    # margin for the sub-pixel shift
+    m = half + 2
+    twin = np.s_[tmpl_half - m:tmpl_half + m + 1,
+                 tmpl_half - m:tmpl_half + m + 1]
+
     # stamp window clipped to the image, with the matching
-    # window into the template frame
+    # window into the (trimmed) template frame
     y0, x0 = iy - half, ix - half
     y0c, y1c = max(0, y0), min(ny, iy + half + 1)
     x0c, x1c = max(0, x0), min(nx, ix + half + 1)
@@ -398,10 +696,15 @@ def make_star_stamp(image, good, comps, tmpl, rr, st, si):
 
     # template shifted to the star's sub-pixel position
     tmpl_shifted = ndimage.shift(
-        tmpl, (yk - iy, xk - ix), order=3, cval=0.0,
-    )[tmpl_slice]
+        tmpl[twin], (yk - iy, xk - ix), order=3, cval=0.0,
+    )[2:-2, 2:-2][tmpl_slice]
     # radius of each stamp pixel from the star
-    rad_grid = rr[tmpl_slice]
+    rad_grid = rr[twin][2:-2, 2:-2][tmpl_slice]
+    # window edge taper, as extend_template_halo applies at
+    # the full array edge
+    tmpl_shifted = tmpl_shifted * np.clip(
+        (half - 2.0 - rad_grid) / 5.0, 0.0, 1.0,
+    )
     usable = good[img_slice] & (tmpl_shifted > 0)
 
     # the star's own mask: floored circle plus its own flagged
@@ -450,9 +753,13 @@ def solve_joint_amplitudes(image, slist, zp):
     measured on the data minus the other stars' current
     models, so close pairs do not double count each other's
     halos.  The flux relation supplies amplitudes where the
-    ring failed, caps ring amplitudes that land on a
-    neighbor's halo (3x), and replaces anchors that measure
-    anomalously low (below 1/3).  Returns the summed model
+    ring failed and CLIPS ring amplitudes to [1/3, 3] times
+    the relation: the cap kills neighbor-halo explosions, the
+    floor guards pathological anchors.  The floor clips
+    rather than replacing with the relation outright: honest
+    low anchors are common (the wing-to-flux ratio is
+    color-dependent, especially in z) and raising them to the
+    relation over-subtracts.  Returns the summed model
     """
     model = np.zeros_like(image)
     for _ in range(NPASS):
@@ -476,15 +783,7 @@ def solve_joint_amplitudes(image, slist, zp):
                     resid[ring] / st['T'][ring],
                 )), 0.0)
                 if ap is not None:
-                    if amp < ap / 3.0:
-                        # failed or background-absorbed anchor
-                        # (a smooth background eats the wing
-                        # signal at a bright star's circle
-                        # edge); the relation is the better
-                        # estimate
-                        amp = ap
-                    else:
-                        amp = min(amp, 3.0 * ap)
+                    amp = min(max(amp, ap / 3.0), 3.0 * ap)
             model[sl] += (amp - st['A']) * st['T']
             st['A'] = amp
     return model
@@ -507,7 +806,7 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
     seg = field_segmentation(image, good, sig)
 
     try:
-        tmpl = build_template(image, good, seg, gaia, x, y)
+        tmpl = build_template(image, good, seg, gaia, x, y, stars)
     except RuntimeError as err:
         # mask-only fallback: a patch too barren to build a
         # template even at the extended faint limit has next
@@ -516,8 +815,9 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
         print(f'    WARNING: no star template ({err}); '
               'masking without subtraction')
         return []
-    half = TMPL_OUT_HALF
-    gy, gx = np.mgrid[-half:half + 1, -half:half + 1]
+    tmpl_half = (tmpl.shape[0] - 1) // 2
+    gy, gx = np.mgrid[-tmpl_half:tmpl_half + 1,
+                      -tmpl_half:tmpl_half + 1]
     rr = np.hypot(gy, gx)  # radius grid in the template frame
 
     slist = []
@@ -557,14 +857,83 @@ def make_star_table(stars, slist):
     return star_table
 
 
+def restore_object_background(deep_coadd, dbright):
+    """
+    add the stored 'object' background model back to the image
+    around the bright stars.  That model intentionally absorbs
+    star wings and scattered light; restoring it there (an
+    exact undo, weight 1 within RESTORE_RAD of the bright-star
+    masks tapering to 0 over RESTORE_TAPER) returns the wing
+    light to the image so the template subtraction can remove
+    it as star flux.  The preliminary and final backgrounds
+    re-handle any true sky the model carried.
+
+    A coadd without a stored model (the file-backed test path)
+    is skipped with a warning
+    """
+    bgs = getattr(deep_coadd, 'backgrounds', None)
+    if bgs is None or 'object' not in bgs:
+        print('    WARNING: no stored object background '
+              'model; restoration skipped')
+        return
+    model = bgs['object'].field.render(
+        deep_coadd.bbox, dtype=deep_coadd.image.array.dtype,
+    ).quantity.value
+    w = np.clip(
+        (RESTORE_RAD + RESTORE_TAPER - dbright)
+        / RESTORE_TAPER,
+        0.0, 1.0,
+    )
+    deep_coadd.image.array[:, :] += w * model
+    print(f'    restored object model over '
+          f'{(w > 0).mean():.3f} of the patch')
+
+
+def preliminary_background(deep_coadd, dstar, dbright):
+    """
+    mask-aware preliminary background on the restored image,
+    before the template build and subtraction: flattens the
+    sky that the template stack and the amplitude anchors sit
+    on.  Star zones (PRE_GROW everywhere, PRE_GROW_BRIGHT
+    around the bright stars) and detections are excluded from
+    the boxes, so the model cannot chase the wing light the
+    restoration just returned
+    """
+    import sep
+
+    image = deep_coadd.image.array
+    var = deep_coadd.variance.array
+    mask0 = deep_coadd.mask.array[:, :, 0]
+    good = (
+        np.isfinite(var) & (var > 0)
+        & ((mask0 & DM_OUT) == 0)
+    )
+    sig = float(np.sqrt(np.median(var[good])))
+    seg = field_segmentation(image, good, sig)
+    bad = (
+        ~good | (seg > 0)
+        | (dstar < PRE_GROW) | (dbright < PRE_GROW_BRIGHT)
+    )
+    bkg = sep.Background(
+        np.ascontiguousarray(image, dtype='f4'),
+        mask=bad, bw=PRE_BW, bh=PRE_BW,
+    )
+    image[:, :] -= bkg.back()
+    print(f'    preliminary background: globalback '
+          f'{bkg.globalback:.3f}')
+
+
 def handle_stars(deep_coadd, wcs, gaia, gsub=GSUB,
                  subtract=True):
     """
-    the getimages-time star handling: census, star mask, and
-    (optionally) template subtraction, modifying the image in
-    place.  Returns (starmask, star_table, dstar) with dstar
-    the distance transform off the mask (None when there is no
-    mask), for the background margin and the taper
+    the getimages-time star handling, modifying the image in
+    place: census and star mask; then, when subtracting, the
+    local restoration of the stored object background around
+    the bright stars, the mask-aware preliminary background,
+    and the two-scale template subtraction.  Returns
+    (starmask, star_table, dstar) with dstar the distance
+    transform off the mask, for the background margin and the
+    taper
     """
     from scipy import ndimage
 
@@ -572,9 +941,23 @@ def handle_stars(deep_coadd, wcs, gaia, gsub=GSUB,
     x, y = gaia_pixel_positions(gaia, wcs, deep_coadd.bbox)
     stars = select_stars(gaia, x, y, mask0, gsub=gsub)
     starmask, comps = build_star_mask(stars, mask0)
+    dstar = ndimage.distance_transform_edt(~starmask)
 
     star_table = None
     if subtract:
+        bright = stars[stars['G'] < RESTORE_GMAX]
+        if bright.size > 0:
+            bsm, _ = build_star_mask(
+                bright, mask0, verbose=False,
+            )
+            dbright = ndimage.distance_transform_edt(~bsm)
+            restore_object_background(deep_coadd, dbright)
+        else:
+            # no bright stars: nothing to restore, and the
+            # pre-pass needs no extra exclusion
+            dbright = np.full(mask0.shape, np.inf)
+        preliminary_background(deep_coadd, dstar, dbright)
+
         slist = subtract_stars(
             deep_coadd.image.array,
             deep_coadd.variance.array,
@@ -582,7 +965,6 @@ def handle_stars(deep_coadd, wcs, gaia, gsub=GSUB,
         )
         star_table = make_star_table(stars, slist)
 
-    dstar = ndimage.distance_transform_edt(~starmask)
     return starmask, star_table, dstar
 
 

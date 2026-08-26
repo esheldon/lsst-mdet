@@ -45,10 +45,12 @@ def prepare_band(deep_coadd, wcs, gaia, args):
     star handling, background redetermination, and star-region
     apodization for one band, modifying the coadd in place.
 
-    Returns (starmask_plane, apod, star_table): the three
-    valued starmask output plane (None without star handling),
-    the taper width actually applied, and the gaia census
-    table with fitted amplitudes (None unless subtracting)
+    Returns (starmask_plane, apod, star_table, skyvar): the
+    three valued starmask output plane (None without star
+    handling), the taper width actually applied, the gaia
+    census table with fitted amplitudes (None unless
+    subtracting), and the sky-variance map for the pixel
+    weights (None without the background redo)
     """
     starmask = None
     star_table = None
@@ -61,6 +63,7 @@ def prepare_band(deep_coadd, wcs, gaia, args):
     elif args.starsub or args.redo_bg:
         print('    no gaia: star handling skipped')
 
+    skyvar = None
     if args.redo_bg:
         # margin outside the mask: rim pixels are partially
         # contaminated and must not steer the background or
@@ -68,7 +71,12 @@ def prepare_band(deep_coadd, wcs, gaia, args):
         smbg = None
         if dstar is not None:
             smbg = dstar < BG_GROW
-        redo_background(deep_coadd, starmask=smbg)
+        skyvar = redo_background(deep_coadd, starmask=smbg)
+    else:
+        print('    WARNING: no background redo: diagnostic '
+              'mode only; no skyvar extension will be '
+              'written, and processing will fall back to the '
+              'raw variance plane for pixel weights')
 
     # apodize AFTER the background determination
     apod = 0.0
@@ -81,7 +89,7 @@ def prepare_band(deep_coadd, wcs, gaia, args):
         starmask_plane = make_starmask_plane(
             starmask, dstar, apod,
         )
-    return starmask_plane, apod, star_table
+    return starmask_plane, apod, star_table, skyvar
 
 
 def main():
@@ -152,7 +160,7 @@ def main():
         # a sparse-field template failure degrades to
         # mask-only inside subtract_stars, so any error here
         # is a bug and should crash
-        starmask_plane, apod, star_table = prepare_band(
+        starmask_plane, apod, star_table, skyvar = prepare_band(
             deep_coadd, wcs, gaia, args,
         )
 
@@ -193,6 +201,7 @@ def main():
             star_table=star_table,
             gsub=args.gsub,
             minrad=MINRAD,
+            skyvar=skyvar,
         )
 
 

@@ -6,6 +6,18 @@ from .defaults import DM_OUT
 
 
 def redo_background(deep_coadd, starmask=None):
+    """
+    redo the background determination on the image, in place,
+    and calibrate the noise realization to the measured sky
+    rms.
+
+    Returns the sky-variance map: the squared per-box rms of
+    the final object-and-star-masked fit.  Measured from the
+    image fluctuations, it carries the depth structure but no
+    object poisson term, and is the plane the pixel weights
+    should be built from (the variance plane includes the
+    objects' poisson noise, making weights signal-dependent)
+    """
     import sep
 
     image = deep_coadd.image.array
@@ -64,3 +76,5 @@ def redo_background(deep_coadd, starmask=None):
 
     noise[:, :] *= noise_factor
     var[:, :] *= noise_factor ** 2
+
+    return bkg.rms().astype('f4') ** 2

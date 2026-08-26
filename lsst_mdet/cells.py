@@ -11,7 +11,8 @@ from .structs import get_cell_meta
 from .wcs import get_cell_jacobian
 
 
-def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
+def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
+               skyvars=None):
     """
     pull a MultiBandObsList from the input deep_coadds for the indicated cell.
 
@@ -24,6 +25,12 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
     wcs: DM wcs object
         wcs used for jacobian
     starmask: bool, optional
+    skyvars: list, optional
+        per-band patch-frame sky-variance maps from
+        redo_background, used for the pixel weights.  Entries
+        of None fall back to the raw variance plane, which
+        includes the objects' poisson noise (diagnostic runs
+        only)
 
     Returns
     -------
@@ -48,19 +55,28 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
 
         good = np.isfinite(var) & (mask & DM_OUT == 0)
 
+        pb = deep_coadd.bbox
+        patch_cut = np.s_[
+            bbox.y.start - pb.y.start:
+            bbox.y.stop - pb.y.start,
+            bbox.x.start - pb.x.start:
+            bbox.x.stop - pb.x.start,
+        ]
+
         smcut = None
         if starmask is not None:
             # the star attenuation zone (patch-frame array)
             # carries no usable signal after subtraction and
             # apodization
-            pb = deep_coadd.bbox
-            smcut = starmask[
-                bbox.y.start - pb.y.start:
-                bbox.y.stop - pb.y.start,
-                bbox.x.start - pb.x.start:
-                bbox.x.stop - pb.x.start,
-            ]
+            smcut = starmask[patch_cut]
             good &= ~smcut
+
+        # weights come from the sky-variance map when there is
+        # one: the variance plane's object poisson term would
+        # make them signal-dependent
+        weight_var = var
+        if skyvars is not None and skyvars[iband] is not None:
+            weight_var = skyvars[iband][patch_cut]
 
         w = np.where(good)
         good_frac = w[0].size / var.size
@@ -89,7 +105,7 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
             )
             obs = _make_cell_obs(
                 image=image,
-                var=var,
+                weight_var=weight_var,
                 good=good,
                 noise=noise,
                 mfrac=mfrac,
@@ -128,7 +144,8 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None):
         return mbobs, cell_meta
 
 
-def _make_cell_obs(image, var, good, noise, mfrac, psf_image, jacobian):
+def _make_cell_obs(image, weight_var, good, noise, mfrac,
+                   psf_image, jacobian):
     import ngmix
 
     psf_jacobian = jacobian.copy()
@@ -142,7 +159,7 @@ def _make_cell_obs(image, var, good, noise, mfrac, psf_image, jacobian):
     )
 
     weight = np.zeros(image.shape)
-    weight[good] = 1.0 / var[good]
+    weight[good] = 1.0 / weight_var[good]
 
     bmask = np.zeros(image.shape, dtype='i4')
     bmask[~good] = 1
@@ -217,25 +234,36 @@ class ButlerCoadd(object):
 
 def load_coadds_butler(butler, tract, patch, bands,
                        redo_bg=False, starsub=False,
-                       gaia_file=None):
+                       gaia_file=None, gsub=None,
+                       apod_stars=True):
     """
     load the deep coadds for a patch from the butler, with the
     optional star subtraction and background redetermination
     applied in that order.  Returns
-    (coadds, wcs, starmask, star_table, apod, tract_bounds)
-    with the coadds wrapped for pull_mbobs, the wcs wrapped
-    for the jacobian helper, the star census and taper width
-    for the footprint (None and 0 without starsub), and the
+    (coadds, wcs, starmask, star_table, apod, tract_bounds,
+    skyvars) with the coadds wrapped for pull_mbobs, the wcs
+    wrapped for the jacobian helper, the star census and taper
+    width for the footprint (None and 0 without starsub), the
     tract inner sky bounds for the primary cut and the
-    footprint trim
+    footprint trim, and the per-band sky-variance maps for the
+    pixel weights (None entries without the background redo)
     """
     from .background import redo_background
     from .defaults import SKYMAP_VERS
-    from .gaia import fetch_gaia, read_gaia_parquet
+    from .gaia import GMAX, fetch_gaia, read_gaia_parquet
     from .starsub import (
-        APOD_STARS, BG_GROW, apply_star_taper, handle_stars,
+        APOD_STARS, BG_GROW, GSUB, apply_star_taper,
+        handle_stars,
     )
     from .wcs import ButlerWcs
+
+    if gsub is None:
+        gsub = GSUB
+
+    if not redo_bg:
+        print('WARNING: no background redo: diagnostic mode '
+              'only; pixel weights will use the raw variance '
+              'plane, which includes object poisson noise')
 
     skymap = butler.get("skyMap", skymap=SKYMAP_VERS)
 
@@ -247,6 +275,7 @@ def load_coadds_butler(butler, tract, patch, bands,
     gaia = None
     starmasks = []
     star_table = None
+    skyvars = []
     for band in bands:
         data_id = {
             "band": band,
@@ -260,31 +289,43 @@ def load_coadds_butler(butler, tract, patch, bands,
 
         if starsub:
             if gaia is None:
+                gmax = max(gsub, GMAX)
                 if gaia_file is not None:
                     gaia = read_gaia_parquet(
                         gaia_file, wcs, deep_coadd.bbox,
+                        gmax=gmax,
                     )
                 else:
-                    gaia = fetch_gaia(wcs, deep_coadd.bbox)
+                    gaia = fetch_gaia(
+                        wcs, deep_coadd.bbox, gmax=gmax,
+                    )
             # the getimages sequence: subtract, background,
             # then the taper LAST, so the star holes stay
             # exactly zero (tapering first would leave -bkg
             # inside them after the background subtraction)
             starmask_b, stable_b, dstar = handle_stars(
-                deep_coadd, wcs, gaia, subtract=True,
+                deep_coadd, wcs, gaia, gsub=gsub,
+                subtract=True,
             )
             if star_table is None:
                 # the census is the same in every band up to
                 # per-band saturation details; keep the first
                 star_table = stable_b
+            skyvar = None
             if redo_bg:
-                redo_background(
+                skyvar = redo_background(
                     deep_coadd, starmask=dstar < BG_GROW,
                 )
-            apply_star_taper(deep_coadd, dstar, width=APOD_STARS)
+            if apod_stars:
+                apply_star_taper(
+                    deep_coadd, dstar, width=APOD_STARS,
+                )
             starmasks.append(dstar < APOD_STARS)
         elif redo_bg:
-            redo_background(deep_coadd, starmask=None)
+            skyvar = redo_background(deep_coadd, starmask=None)
+        else:
+            skyvar = None
+        skyvars.append(skyvar)
         coadds.append(ButlerCoadd(deep_coadd))
 
     # one mask for all bands: consistent footprints downstream
@@ -292,10 +333,14 @@ def load_coadds_butler(butler, tract, patch, bands,
     apod = 0.0
     if starsub:
         starmask = np.logical_or.reduce(starmasks)
-        apod = APOD_STARS
+        if apod_stars:
+            apod = APOD_STARS
         print(f'union star mask fraction {starmask.mean():.3f}')
 
-    return coadds, wcs, starmask, star_table, apod, tract_bounds
+    return (
+        coadds, wcs, starmask, star_table, apod, tract_bounds,
+        skyvars,
+    )
 
 
 def make_psf_cube(deep_coadd, xs, ys):
