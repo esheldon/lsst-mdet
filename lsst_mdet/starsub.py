@@ -13,7 +13,7 @@ from .gaia import gaia_pixel_positions
 MASK_R15 = 45.0     # circle radius in px at G = 15
 MASK_SLOPE = 0.115  # radius scales as 10^(slope * (15 - G))
 MASK_RMAX = 450.0
-MINRAD = 20.0       # circle floor: subtracted cores never show
+MINRAD = 20.0       # circle floor. subtracted cores never show
 STAR_MARGIN = 210   # off-patch stars whose wings still intrude
 GSAT = 15.2         # G saturation threshold of these coadds
 GSUB = 19.0         # subtract stars brighter than this
@@ -24,14 +24,14 @@ APOD_STARS = 12.0   # taper width outside the star mask
 # empirical extended star template
 TMPL_HALF = 50       # measured stamp half size
 TMPL_OUT_HALF = 250  # minimum halo extension half size
-# per-star extent: TMPL_EXT_FACTOR times the mask radius,
+# per-star extent. TMPL_EXT_FACTOR times the mask radius,
 # capped.  A fixed 250 px edge leaves a G~10 star's halo
 # (~0.5 sigma there) unsubtracted beyond it, visible as a
 # ring at the stamp edge
 TMPL_EXT_FACTOR = 3.0
 TMPL_OUT_MAX = 900
 TMPL_NSTAR = 60
-TMPL_GMIN = GSAT + 0.3  # template stars: bright but unsaturated
+TMPL_GMIN = GSAT + 0.3  # template stars. bright but unsaturated
 TMPL_GMAX = 17.5        # preferred faint limit
 TMPL_GMAX_CAP = 19.0    # adaptive faint-limit cap (census depth)
 TMPL_MIN_CAND = 20      # extend the faint limit below this
@@ -46,7 +46,7 @@ HALO_SLOPE = -4.0
 # allows, with a tiered fallback for sparse fields
 AUR_GMIN = 13.0      # aureole measurement stars
 AUR_GMAX = 15.5
-AUR_RMAX = 250.0     # fit limit: beyond this the ambient
+AUR_RMAX = 250.0     # fit limit. beyond this the ambient
 #                      source-carpet floor takes over
 AUR_SLOPE = -2.0     # canonical scattering-aureole fallback
 AUR_SLOPE_MIN = -3.5  # tier-1 fitted-slope guard
@@ -60,7 +60,7 @@ AUR_AMP_GUARD = 10.0  # fitted amp within this factor of the
 # that model absorbs star wings and scattered
 # light; adding it back around the bright stars restores the
 # wing light so the template can subtract it as star flux.
-# ALL saturated stars need it: with the old G < 13 cut the
+# ALL saturated stars need it. with the old G < 13 cut the
 # mid-bright (13-15.2) rings measured the absorbed remainder,
 # the flux relation disagreed, and the amplitude floor
 # over-subtracted (worst in z, where the red halo spreads the
@@ -71,7 +71,7 @@ RESTORE_RAD = 400.0    # full restoration within this distance
 RESTORE_TAPER = 100.0  # taper width down to zero
 
 # mask-aware preliminary background, applied after the
-# restoration and before the template/subtraction: flattens
+# restoration and before the template/subtraction. flattens
 # the sky the template stack and amplitude anchors sit on,
 # without chasing the (excluded) star wings
 PRE_BW = 64            # background box size
@@ -83,8 +83,9 @@ NPASS = 3           # joint amplitude passes
 
 def circle_radius(gmag):
     """
-    the mask circle radius law: magnitude-scaled with a floor
-    and a cap
+    the mask circle radius law
+
+     magnitude-scaled with a floor and a cap
 
     Parameters
     ----------
@@ -391,10 +392,10 @@ def stack_star_stamps(image, good, seg, x, y, sel):
     for k in sel:
         cx, cy = float(x[k]), float(y[k])
 
-        # icx, icy: nearest integer pixel of the star center
+        # nearest integer pixel of the star center
         icx, icy = int(round(cx)), int(round(cy))
 
-        # m: stamp half size with a 2 px shift margin
+        # stamp half size with a 2 px shift margin
         m = half + 2
         cut = np.s_[icy - m:icy + m + 1, icx - m:icx + m + 1]
         stamp = image[cut].copy()
@@ -539,7 +540,7 @@ def fit_halo_slope(prof):
         _, a, ped = linfit(slope)
 
         if not a > 0:
-            # last resort: anchor the fallback law to the raw
+            # the last resort is anchor the fallback law to the raw
             # profile medians, ignoring the pedestal
             wpos = pfit > 0
             ped = 0.0
@@ -811,7 +812,7 @@ def fit_aureole(rmid, med, count, nstars, slope, ln_a):
     if usable.sum() >= 3:
 
         def linfit(s):
-            # model: k_in * (inner law) + bb * r^s.  In
+            # k_in * (inner law) + bb * r^s.  In
             # template units the aureole amplitude is bb/k_in
             r = rmid[usable]
             basis = np.vstack([
@@ -841,7 +842,7 @@ def fit_aureole(rmid, med, count, nstars, slope, ln_a):
                 if bb > 0:
                     s_aur, b = float(s_fit), bb / k_in
                 else:
-                    # measured zero: no aureole light in this
+                    # no aureole light in this
                     # image; the guard clips it to the lower
                     # bound below
                     b = 0.0
@@ -919,7 +920,7 @@ def build_template(image, good, seg, gaia, x, y, stars):
     slope, ln_a, ped = fit_halo_slope(prof)
 
     # the sky pedestal is additive and must not scale with a
-    # star's amplitude: remove it from the measured region
+    # star's amplitude. remove it from the measured region
     # (the halo replaces everything beyond the junction)
     tmpl = tmpl - ped
 
@@ -1024,19 +1025,31 @@ def anchor_ring(
     """
     from scipy import ndimage
 
-    # distance of every stamp pixel from the star's own mask
-    dist = ndimage.distance_transform_edt(~local_mask)
+    # the ring only needs distances <= 10 px from the star's
+    # own mask, so the distance transform can run on the mask's
+    # padded bounding box: everything outside the pad is
+    # farther than 10 px by construction, and inside the box
+    # the distances are identical to a full-stamp transform
+    ring = np.zeros(local_mask.shape, dtype=bool)
 
-    ring = (
-        (dist >= 2) & (dist <= 10)
-        & (rad_grid < half - 10) & usable
-    )
+    if local_mask.any():
+        pad = 12
+        rows = np.flatnonzero(local_mask.any(axis=1))
+        cols = np.flatnonzero(local_mask.any(axis=0))
+        sub = np.s_[
+            max(rows[0] - pad, 0):rows[-1] + pad + 1,
+            max(cols[0] - pad, 0):cols[-1] + pad + 1,
+        ]
+
+        dist = ndimage.distance_transform_edt(~local_mask[sub])
+        ring[sub] = (dist >= 2) & (dist <= 10)
+        ring &= (rad_grid < half - 10) & usable
 
     if ring.sum() >= 30:
         return ring
 
     if not on_image:
-        # off-patch intruder whose mask is off-image: anchor on
+        # off-patch intruder whose mask is off-image. anchor on
         # the nearest visible annulus outside the circle
         # radius -- closer in is core territory and measures
         # garbage
@@ -1116,9 +1129,13 @@ def make_star_stamp(image, good, comps, tmpl, rr, st, si):
     img_slice = np.s_[y0c:y1c, x0c:x1c]
     tmpl_slice = np.s_[y0c - y0:y1c - y0, x0c - x0:x1c - x0]
 
-    # template shifted to the star's sub-pixel position
+    # template shifted to the star's sub-pixel position;
+    # linear interpolation as in stack_star_stamps. outside the
+    # mask the profile is smooth enough that the difference
+    # from cubic is far below the noise, and it avoids the
+    # spline prefilter on these large windows
     tmpl_shifted = ndimage.shift(
-        tmpl[twin], (yk - iy, xk - ix), order=3, cval=0.0,
+        tmpl[twin], (yk - iy, xk - ix), order=1, cval=0.0,
     )[2:-2, 2:-2][tmpl_slice]
 
     # radius of each stamp pixel from the star
@@ -1131,7 +1148,7 @@ def make_star_stamp(image, good, comps, tmpl, rr, st, si):
     )
     usable = good[img_slice] & (tmpl_shifted > 0)
 
-    # the star's own mask: floored circle plus its own flagged
+    # the star's own mask, floored circle plus its own flagged
     # components (neighbors' components must not steer the ring)
     rad = circle_radius(gmag)
     local_mask = rad_grid <= rad
@@ -1176,7 +1193,7 @@ def fit_flux_zeropoint(image, slist):
 
     for st in slist:
         if st['ring'] is not None and st['G'] < 15.5:
-            # a0: single-star ring amplitude estimate
+            # single-star ring amplitude estimate
             a0 = float(np.median(
                 image[st['sl']][st['ring']]
                 / st['T'][st['ring']],
@@ -1297,14 +1314,14 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
         & ((mask0 & DM_OUT) == 0)
     )
 
-    # sig: median pixel noise, for the detection threshold
+    # median pixel noise, for the detection threshold
     sig = float(np.sqrt(np.median(var[good])))
     seg = field_segmentation(image, good, sig)
 
     try:
         tmpl = build_template(image, good, seg, gaia, x, y, stars)
     except RuntimeError as err:
-        # mask-only fallback: a patch too barren to build a
+        # mask-only fallback. a patch too barren to build a
         # template even at the extended faint limit has next
         # to nothing worth subtracting.  Keep the masking and
         # taper (an empty work list leaves every amplitude 0)
