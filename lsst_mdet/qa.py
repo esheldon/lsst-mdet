@@ -24,6 +24,14 @@ def measure_stacked_star_residuals(coadd, star_table, starmask):
     across the stars of each QA_GBINS brightness bin.  Flat
     and zero means the subtraction left nothing behind
 
+    The profiles are referenced to the blank-pixel median of
+    the same image: the background zero is mode-like (sep)
+    while these are medians, and the sub-threshold source
+    carpet skews the median of blank sky a few 0.001 sigma
+    above the mode.  Without the reference every profile
+    carries that pedestal at all radii; with it, zero means
+    "indistinguishable from blank sky"
+
     Parameters
     ----------
     coadd: ButlerCoadd or FilePatchCoadd
@@ -50,6 +58,10 @@ def measure_stacked_star_residuals(coadd, star_table, starmask):
     sig = float(np.sqrt(np.nanmedian(var[good])))
     seg = field_segmentation(image, good, sig)
     okbase = good & (seg == 0) & ~starmask
+
+    # the expected pedestal: the blank-sky median sits above
+    # the mode-like background zero (see the docstring)
+    ped = float(np.median(image[okbase])) / sig
 
     edges = QA_EDGES
     rmid = 0.5 * (edges[:-1] + edges[1:])
@@ -81,7 +93,7 @@ def measure_stacked_star_residuals(coadd, star_table, starmask):
                 if w.sum() > 100:
                     prof[i] = np.median(
                         image[y0:y1, x0:x1][w],
-                    ) / sig
+                    ) / sig - ped
             if np.isfinite(prof).any():
                 profs.append(prof)
 
@@ -172,7 +184,10 @@ def write_star_residual_qa(fname, coadds, star_table, starmask):
             ax.set_ylabel('stacked median residual [sigma]')
         if iband == 0:
             ax.legend(fontsize=8)
-    fig.suptitle('stacked star residuals outside the masks')
+    fig.suptitle(
+        'stacked star residuals outside the masks '
+        '(referenced to the blank-sky median)'
+    )
     fig.tight_layout()
     print('writing:', fname)
     fig.savefig(fname, dpi=110)
