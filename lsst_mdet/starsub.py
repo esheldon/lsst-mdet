@@ -1283,6 +1283,14 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
     a template degrades to mask-only handling (nothing subtracted, empty work
     list returned)
 
+    The whole solve runs on a working copy referenced to the undetected-pixel
+    median: sky estimators track the mode of the pixel distribution while the
+    unresolved-source carpet skews the median of blank pixels above it, so
+    without the reference the anchor rings measure wing plus that ambient
+    level, and an amplitude that absorbs the ambient over-subtracts everywhere
+    the wing declines (a negative collar just outside every mask, worst in
+    the red bands)
+
     Parameters
     ----------
     image: array
@@ -1318,8 +1326,16 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
     sig = float(np.sqrt(np.median(var[good])))
     seg = field_segmentation(image, good, sig)
 
+    # the ambient sky reference (see the docstring): the
+    # template wings, the aureole cloud, and every ring median
+    # are measured on an ambient-free working copy; the image
+    # itself is only touched by the final model subtraction
+    amb = float(np.median(image[good & (seg == 0)]))
+    print(f'    ambient reference {amb / sig:+.4f} sigma')
+    work = image - amb
+
     try:
-        tmpl = build_template(image, good, seg, gaia, x, y, stars)
+        tmpl = build_template(work, good, seg, gaia, x, y, stars)
     except RuntimeError as err:
         # mask-only fallback. a patch too barren to build a
         # template even at the extended faint limit has next
@@ -1343,13 +1359,13 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
 
     for si, st in enumerate(stars):
         entry = make_star_stamp(
-            image, good, comps, tmpl, rr, st, si,
+            work, good, comps, tmpl, rr, st, si,
         )
         if entry is not None:
             slist.append(entry)
 
-    zp = fit_flux_zeropoint(image, slist)
-    model = solve_joint_amplitudes(image, slist, zp)
+    zp = fit_flux_zeropoint(work, slist)
+    model = solve_joint_amplitudes(work, slist, zp)
 
     image -= model
     namp = int(sum(st['A'] > 0 for st in slist))
