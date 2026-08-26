@@ -53,8 +53,13 @@ AUR_AMP_GUARD = 10.0  # fitted amp within this factor of the
 # local restoration of the stored 'object' background model:
 # that model intentionally absorbs star wings and scattered
 # light; adding it back around the bright stars restores the
-# wing light so the template can subtract it as star flux
-RESTORE_GMAX = 13.0    # restore around stars brighter than this
+# wing light so the template can subtract it as star flux.
+# ALL saturated stars need it: with the old G < 13 cut the
+# mid-bright (13-15.2) rings measured the absorbed remainder,
+# the flux relation disagreed, and the amplitude floor
+# over-subtracted (worst in z, where the red halo spreads the
+# ring amplitudes)
+RESTORE_GMAX = GSAT    # restore around stars brighter than this
 RESTORE_RAD = 400.0    # full restoration within this distance
 #                        of the bright-star masks
 RESTORE_TAPER = 100.0  # taper width down to zero
@@ -690,9 +695,13 @@ def solve_joint_amplitudes(image, slist, zp):
     measured on the data minus the other stars' current
     models, so close pairs do not double count each other's
     halos.  The flux relation supplies amplitudes where the
-    ring failed, caps ring amplitudes that land on a
-    neighbor's halo (3x), and replaces anchors that measure
-    anomalously low (below 1/3).  Returns the summed model
+    ring failed and CLIPS ring amplitudes to [1/3, 3] times
+    the relation: the cap kills neighbor-halo explosions, the
+    floor guards pathological anchors.  The floor clips
+    rather than replacing with the relation outright: honest
+    low anchors are common (the wing-to-flux ratio is
+    color-dependent, especially in z) and raising them to the
+    relation over-subtracts.  Returns the summed model
     """
     model = np.zeros_like(image)
     for _ in range(NPASS):
@@ -716,15 +725,7 @@ def solve_joint_amplitudes(image, slist, zp):
                     resid[ring] / st['T'][ring],
                 )), 0.0)
                 if ap is not None:
-                    if amp < ap / 3.0:
-                        # failed or background-absorbed anchor
-                        # (a smooth background eats the wing
-                        # signal at a bright star's circle
-                        # edge); the relation is the better
-                        # estimate
-                        amp = ap
-                    else:
-                        amp = min(amp, 3.0 * ap)
+                    amp = min(max(amp, ap / 3.0), 3.0 * ap)
             model[sl] += (amp - st['A']) * st['T']
             st['A'] = amp
     return model
