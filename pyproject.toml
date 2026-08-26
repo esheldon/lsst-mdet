@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lsst_mdet"
+version = "0.1.0"
+description = "metadetect and deblending measurement on LSST cell coadds"
+requires-python = ">=3.11"
+
+[project.scripts]
+lsst-mdet-process-cells = "lsst_mdet.cli.process_cells:main_cli"
+lsst-mdet-getimages = "lsst_mdet.cli.getimages:main"
+lsst-mdet-make-slurm = "lsst_mdet.cli.make_slurm:main"
+
+[tool.setuptools.packages.find]
+include = ["lsst_mdet*"]
+
+# ruff configuration lives in .ruff.toml, which takes precedence
+# over any [tool.ruff] section here -- do not add one

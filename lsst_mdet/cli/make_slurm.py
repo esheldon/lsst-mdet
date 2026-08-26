@@ -1,5 +1,6 @@
-#!/usr/bin/env python
-
+"""
+slurm job generation for lsst-mdet-process-cells
+"""
 MAX_SEED = 2**30
 
 SCRIPT = r"""#!/usr/bin/bash
@@ -15,7 +16,7 @@ outfile=$4
 
 export OMP_NUM_THREADS=1
 
-/usr/bin/time -v python process_cells.py \
+/usr/bin/time -v lsst-mdet-process-cells \
     --seed ${seed} \
     --tract ${tract} \
     --patch ${patch} \

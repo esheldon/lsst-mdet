@@ -1,0 +1,53 @@
+healsparse
+----------
+build up a footprint as we go.  Then and it with the
+star mask and the tract box.
+
+        footprint = healsparse.HealSparseMap.make_empty(32, 2**17, bool, bit_packed=True)
+
+        for cell_i in range(1, 21):
+            for cell_j in range(1, 21):
+                if cell_worked:
+                    # a cell is a polygon of great circles on the sphere since
+                    # the WCS uses a gnomonic projection.
+                    # first get pixel bounds as vertices array
+                    ci = patch_info.getCellInfo((cell_i, cell_j))
+                    bb = ci.getInnerBBox()
+                    data = np.array([
+                        [bb.beginX, bb.beginY],
+                        [bb.endX, bb.beginY],
+                        [bb.endX, bb.endY],
+                        [bb.beginX, bb.endY],
+                    ], dtype=np.float64)
+                    # then convert to ra,dec on sky
+                    ra, dec = wcs.pixelToSkyArray(data[:, 0], data[:, 1], degrees=True)
+                    # finally use a spherical polygon
+                    footprint |= healsparse.Polygon(ra=ra, dec=dec, value=True)
+
+        ip = tract_info.inner_sky_region
+        ramin = ip.getLon().getA().asDegrees()
+        ramax = ip.getLon().getB().asDegrees()
+        decmin = ip.getLat().getA().asDegrees()
+        decmax = ip.getLat().getB().asDegrees()
+        footprint &= healsparse.Box(
+            ra1=ramin,
+            ra2=ramax,
+            dec1=decmin,
+            dec2=decmax,
+            value=True,
+        )
+
+        # also and it with the star mask that has been built up
+
+
+Add Tfrac
+----------
+This requires upstream support, keeping psf_T maps
+
+anull detections
+----------------
+just needs to be copied in
+
+possibly support gaia stars from Xiangchong's files
+---------------------------------------------------
+sending a file path would override the query
