@@ -18,6 +18,7 @@ from ..patchfiles import load_coadds_files
 from ..io import write_color_image, write_output
 from ..pipeline import do_metacal_and_process, process_one_mbobs
 from ..psf import fit_and_set_psfrec
+from ..qa import write_star_residual_qa
 from ..wcs import calculate_positions
 
 
@@ -275,6 +276,14 @@ def main(
         outfile.replace('.fits', '-color.jpg'), deep_coadds,
         wcs=wcs, footprint=footprint,
     )
+
+    # stacked residual profiles of the subtracted stars: flat
+    # and zero means the subtraction left nothing behind
+    if star_table is not None and star_table.size > 0:
+        write_star_residual_qa(
+            outfile.replace('.fits', '-star-residuals.png'),
+            deep_coadds, star_table, starmask,
+        )
 
 
 def main_cli():
