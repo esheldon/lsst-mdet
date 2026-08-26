@@ -307,3 +307,41 @@ def test_restore_no_model_is_noop():
     dbright = np.zeros((50, 50))
     ss.restore_object_background(coadd, dbright)
     assert np.all(image == 1.0)
+
+
+def test_template_out_half():
+    from lsst_mdet.starsub import (
+        TMPL_EXT_FACTOR, TMPL_OUT_HALF, TMPL_OUT_MAX,
+        circle_radius, template_out_half,
+    )
+    # faint stars keep the floor
+    assert template_out_half(17.0) == TMPL_OUT_HALF
+    # bright stars scale with the mask radius
+    g = 10.0
+    expect = int(TMPL_EXT_FACTOR * circle_radius(g))
+    assert template_out_half(g) == expect
+    assert expect > TMPL_OUT_HALF
+    # the very brightest are capped
+    assert template_out_half(2.0) == TMPL_OUT_MAX
+
+
+def test_extend_template_halo_sized():
+    slope, ln_a = -4.0, np.log(3.0e-3)
+    s_aur, b = -2.0, 1.0e-5
+    tmpl = np.zeros((2 * TMPL_HALF + 1, 2 * TMPL_HALF + 1))
+    out_half = 500
+    big = ss.extend_template_halo(
+        tmpl, slope, ln_a, s_aur, b, out_half=out_half,
+    )
+    assert big.shape == (2 * out_half + 1, 2 * out_half + 1)
+    # the halo continues beyond the old fixed edge
+    r = 400
+    expected = (
+        np.exp(ln_a) * float(r) ** slope
+        + b * float(r) ** s_aur
+    )
+    assert big[out_half, out_half + r] == pytest.approx(
+        expected, rel=1e-6,
+    )
+    # tapered to zero at the new edge
+    assert big[out_half, -1] == 0

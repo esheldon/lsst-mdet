@@ -23,7 +23,13 @@ APOD_STARS = 12.0   # taper width outside the star mask
 
 # empirical extended star template
 TMPL_HALF = 50       # measured stamp half size
-TMPL_OUT_HALF = 250  # power-law halo extension half size
+TMPL_OUT_HALF = 250  # minimum halo extension half size
+# per-star extent: TMPL_EXT_FACTOR times the mask radius,
+# capped.  A fixed 250 px edge leaves a G~10 star's halo
+# (~0.5 sigma there) unsubtracted beyond it, visible as a
+# ring at the stamp edge
+TMPL_EXT_FACTOR = 3.0
+TMPL_OUT_MAX = 900
 TMPL_NSTAR = 60
 TMPL_GMIN = GSAT + 0.3  # template stars: bright but unsaturated
 TMPL_GMAX = 17.5        # preferred faint limit
@@ -346,7 +352,21 @@ def fit_halo_slope(prof):
     return slope, float(np.log(a)), float(ped)
 
 
-def extend_template_halo(tmpl, slope, ln_a, aur_slope, aur_amp):
+def template_out_half(gmag):
+    """
+    per-star template stamp half size: the analytic halo
+    extends to TMPL_EXT_FACTOR times the mask radius (floored
+    at TMPL_OUT_HALF, capped at TMPL_OUT_MAX) so the brightest
+    stars' wings are subtracted beyond the old fixed edge
+    """
+    return int(np.clip(
+        TMPL_EXT_FACTOR * circle_radius(gmag),
+        TMPL_OUT_HALF, TMPL_OUT_MAX,
+    ))
+
+
+def extend_template_halo(tmpl, slope, ln_a, aur_slope, aur_amp,
+                         out_half=None):
     """
     embed the measured template in a larger stamp whose outer
     halo is the fitted inner power law plus the scattering
@@ -354,7 +374,8 @@ def extend_template_halo(tmpl, slope, ln_a, aur_slope, aur_amp):
     taper to zero
     """
     half = TMPL_HALF
-    out_half = TMPL_OUT_HALF
+    if out_half is None:
+        out_half = TMPL_OUT_HALF
     big = np.zeros((2 * out_half + 1, 2 * out_half + 1))
     big[out_half - half:out_half + half + 1,
         out_half - half:out_half + half + 1] = tmpl
@@ -563,12 +584,23 @@ def build_template(image, good, seg, gaia, x, y, stars):
     aur_slope, aur_amp, tier = fit_aureole(
         rmid, med, count, naur, slope, ln_a,
     )
+    # the template array is sized for the brightest census
+    # star (plus the stamp shift margin); each star's stamp
+    # windows it to its own extent
+    out_half = TMPL_OUT_HALF
+    if stars.size > 0:
+        out_half = max(
+            template_out_half(float(g)) for g in stars['G']
+        )
+    out_half += 2
     big = extend_template_halo(
         tmpl, slope, ln_a, aur_slope, aur_amp,
+        out_half=out_half,
     )
     print(f'    template: {nstamp} stamps, '
           f'halo slope {slope:.2f}, '
-          f'pedestal {ped:.1e}')
+          f'pedestal {ped:.1e}, '
+          f'extent {out_half}')
     print(f'    aureole: slope {aur_slope:.2f} '
           f'amp {aur_amp:.2e} (tier {tier}, {naur} stars)')
     return big
@@ -620,19 +652,31 @@ def anchor_ring(rad_grid, usable, local_mask, on_image, rad):
 def make_star_stamp(image, good, comps, tmpl, rr, st, si):
     """
     per-star working set: image window, sub-pixel-shifted
-    template, and amplitude anchor ring.  Returns None for
-    stars whose stamp barely overlaps the image
+    template, and amplitude anchor ring.  The stamp extent
+    scales with brightness (template_out_half), windowing the
+    shared template array centrally; a smaller window gets its
+    own edge taper so the model cannot end in a hard step.
+    Returns None for stars whose stamp barely overlaps the
+    image
     """
     from scipy import ndimage
 
     ny, nx = image.shape
-    half = TMPL_OUT_HALF
+    tmpl_half = (tmpl.shape[0] - 1) // 2
     xk, yk = float(st['x']), float(st['y'])
     gmag = float(st['G'])
+    # the shift margin must fit inside the shared array
+    half = min(template_out_half(gmag), tmpl_half - 2)
     ix, iy = int(round(xk)), int(round(yk))
 
+    # central window of the shared template, with a 2 px
+    # margin for the sub-pixel shift
+    m = half + 2
+    twin = np.s_[tmpl_half - m:tmpl_half + m + 1,
+                 tmpl_half - m:tmpl_half + m + 1]
+
     # stamp window clipped to the image, with the matching
-    # window into the template frame
+    # window into the (trimmed) template frame
     y0, x0 = iy - half, ix - half
     y0c, y1c = max(0, y0), min(ny, iy + half + 1)
     x0c, x1c = max(0, x0), min(nx, ix + half + 1)
@@ -643,10 +687,15 @@ def make_star_stamp(image, good, comps, tmpl, rr, st, si):
 
     # template shifted to the star's sub-pixel position
     tmpl_shifted = ndimage.shift(
-        tmpl, (yk - iy, xk - ix), order=3, cval=0.0,
-    )[tmpl_slice]
+        tmpl[twin], (yk - iy, xk - ix), order=3, cval=0.0,
+    )[2:-2, 2:-2][tmpl_slice]
     # radius of each stamp pixel from the star
-    rad_grid = rr[tmpl_slice]
+    rad_grid = rr[twin][2:-2, 2:-2][tmpl_slice]
+    # window edge taper, as extend_template_halo applies at
+    # the full array edge
+    tmpl_shifted = tmpl_shifted * np.clip(
+        (half - 2.0 - rad_grid) / 5.0, 0.0, 1.0,
+    )
     usable = good[img_slice] & (tmpl_shifted > 0)
 
     # the star's own mask: floored circle plus its own flagged
@@ -757,8 +806,9 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
         print(f'    WARNING: no star template ({err}); '
               'masking without subtraction')
         return []
-    half = TMPL_OUT_HALF
-    gy, gx = np.mgrid[-half:half + 1, -half:half + 1]
+    tmpl_half = (tmpl.shape[0] - 1) // 2
+    gy, gx = np.mgrid[-tmpl_half:tmpl_half + 1,
+                      -tmpl_half:tmpl_half + 1]
     rr = np.hypot(gy, gx)  # radius grid in the template frame
 
     slist = []
