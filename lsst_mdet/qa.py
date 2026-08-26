@@ -127,16 +127,23 @@ def write_star_residual_qa(fname, coadds, star_table, starmask):
     matplotlib.use('Agg')
     import matplotlib.pyplot as mplt
 
+    # always a two-column grid (e.g. griz as 2x2); unused
+    # slots are turned off
     nb = len(coadds)
+    ncols = 2
+    nrows = (nb + ncols - 1) // ncols
     fig, axs = mplt.subplots(
-        ncols=nb, figsize=(5.5 * nb, 5.0),
+        nrows=nrows, ncols=ncols,
+        figsize=(5.5 * ncols, 5.0 * nrows),
         sharey=True, squeeze=False,
     )
+    for ax in axs.flat[nb:]:
+        ax.set_visible(False)
     for iband, coadd in enumerate(coadds):
         results = measure_stacked_star_residuals(
             coadd, star_table, starmask,
         )
-        ax = axs[0, iband]
+        ax = axs.flat[iband]
         for res in results:
             if not np.isfinite(res['stacked']).any():
                 if res['nstars'] > 0:
@@ -161,8 +168,9 @@ def write_star_residual_qa(fname, coadds, star_table, starmask):
         ax.set_xlabel('r - R(mask) [pix]')
         ax.set_title(f'{coadd.band} band')
         ax.set_ylim(-0.15, 0.15)
-        if iband == 0:
+        if iband % ncols == 0:
             ax.set_ylabel('stacked median residual [sigma]')
+        if iband == 0:
             ax.legend(fontsize=8)
     fig.suptitle('stacked star residuals outside the masks')
     fig.tight_layout()
