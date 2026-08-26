@@ -345,3 +345,22 @@ def test_extend_template_halo_sized():
     )
     # tapered to zero at the new edge
     assert big[out_half, -1] == 0
+
+
+def test_fit_aureole_measured_zero():
+    # a cloud with no aureole light (steeper than the inner
+    # law: the fitted coefficient is non-positive) must NOT
+    # fall through to the full continuity prior; it clips to
+    # the lower guard bound, keeping its measured tier
+    slope, ln_a = -4.0, np.log(3.0e-3)
+    rmid = np.logspace(np.log10(45), np.log10(245), 11)
+    med = np.exp(ln_a) * rmid ** (-4.3)
+    count = np.full(11, 12)
+    for nstars, tier_want in [(20, 1), (AUR_MIN_STARS - 1, 2)]:
+        s_aur, b, tier = fit_aureole(
+            rmid, med, count, nstars=nstars,
+            slope=slope, ln_a=ln_a,
+        )
+        assert tier == tier_want
+        bc = np.exp(ln_a) * AUR_BREAK ** (slope - s_aur)
+        assert b == pytest.approx(bc / 10.0, rel=1e-6)

@@ -532,10 +532,19 @@ def fit_aureole(rmid, med, count, nstars, slope, ln_a):
             _, s_fit, k, bb = best
             if k > 0 and bb > 0:
                 tier, s_aur, b = 1, float(s_fit), bb / k
+            elif k > 0:
+                # a measured non-positive aureole is a
+                # measurement: this image carries no aureole
+                # light (e.g. absorbed by earlier
+                # backgrounds).  Take the smallest allowed
+                # amplitude, never the full continuity prior
+                tier, b = 1, 0.0
         else:
             rss, k, bb = linfit(AUR_SLOPE)
             if k > 0 and bb > 0:
                 tier, b = 2, bb / k
+            elif k > 0:
+                tier, b = 2, 0.0
 
     if b is not None:
         # a measured amplitude is always preferred over the
