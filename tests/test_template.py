@@ -449,3 +449,23 @@ def test_canonical_needs_min_stamps():
             image, good, seg, gaia, x, y, stars,
             band='r', fwhm=1.0,
         )
+
+
+def test_aureole_degeneracy_guard():
+    # a cloud that is pure inner wing must not fit a
+    # wing-duplicating "aureole": the slope scan is bounded
+    # away from the inner slope and the measured amplitude
+    # comes out at the zero-clip, not wing-sized
+    slope = -3.9
+    ln_a = 0.7
+    rmid = np.linspace(55.0, 245.0, 12)
+    med = np.exp(ln_a) * rmid ** slope
+    count = np.full(rmid.size, 500)
+
+    s_aur, b, tier = fit_aureole(
+        rmid, med, count, AUR_MIN_STARS + 5, slope, ln_a,
+    )
+    assert tier == 1
+    assert s_aur >= slope + ss.AUR_SLOPE_SEP - 1e-9
+    bc = np.exp(ln_a) * AUR_BREAK ** (slope - s_aur)
+    assert b <= bc / 9.9
