@@ -90,6 +90,16 @@ def log(message):
     print(f'{stamp} {message}', flush=True)
 
 
+def get_rss_gb():
+    """
+    the current resident set size of this process in GB, from
+    /proc/self/statm (pages)
+    """
+    with open('/proc/self/statm') as fobj:
+        resident_pages = int(fobj.read().split()[1])
+    return resident_pages * os.sysconf('SC_PAGE_SIZE') / 1024**3
+
+
 def warmup(args, job):
     """
     import everything and process a few cells of the first patch in
@@ -125,12 +135,57 @@ def warmup(args, job):
             log('WARNING: warmup failed, continuing without it')
 
 
+def limit_blas_threads():
+    """
+    limit the BLAS thread pools to one thread, for this process and
+    the forked children, and make ngmix's per-call limiter reuse the
+    controller made here.
+
+    ngmix.util.single_core_blas wraps its dense linear algebra in
+    threadpoolctl.threadpool_limits, which discovers the loaded BLAS
+    libraries by walking the shared libraries with a ctypes callback.
+    ctypes callbacks are libffi closures, allocated in executable
+    memory that on this system is a MAP_SHARED double mapping of a
+    temporary file.  Forked children share that mapping, each with a
+    private copy of the allocator state, so children creating closures
+    concurrently overwrite each other's trampolines and die with
+    segfaults or aborts inside dl_iterate_phdr.  The discovery is done
+    once here, before forking; the children then only call
+    set_num_threads on the already discovered libraries and create no
+    closures.
+
+    Returns the controller, which must be kept alive
+    """
+    try:
+        import threadpoolctl
+    except ImportError:
+        log('threadpoolctl not available, not limiting BLAS threads')
+        return None
+
+    controller = threadpoolctl.ThreadpoolController()
+    limiter = controller.limit(limits=1, user_api='blas')
+    log('limited BLAS threads to 1 for '
+        f'{[c.internal_api for c in controller.lib_controllers]}')
+
+    try:
+        import ngmix.util
+    except ImportError:
+        return controller, limiter
+
+    def single_core_blas():
+        return controller.limit(limits=1, user_api='blas')
+
+    ngmix.util.single_core_blas = single_core_blas
+    return controller, limiter
+
+
 def run_child(args, job):
     """
     the child process: send all output to the log file, process the
     patch and exit.  This never returns; os._exit is used so that the
     parent's exit handlers and buffers are not run or flushed twice
     """
+    import faulthandler
     import traceback
 
     fd = os.open(job['logfile'], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
@@ -140,6 +195,8 @@ def run_child(args, job):
     # line buffered so the log is complete even if the process dies
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
+    # a python traceback in the log on a segfault or abort
+    faulthandler.enable(file=sys.stderr, all_threads=True)
 
     status = 0
     try:
@@ -233,6 +290,13 @@ def go(args):
     if not args.no_warmup:
         warmup(args, jobs[0])
         log(f'warmup took {time.time() - t0:.1f} s')
+
+    # must stay referenced while the children run
+    blas = limit_blas_threads()  # noqa: F841
+
+    # the children inherit these pages copy-on-write; their reported
+    # maxrss includes them, so this is the baseline to subtract
+    log(f'parent rss before forking {get_rss_gb():.2f} GB')
 
     log(f'running {len(jobs)} jobs with nproc {args.nproc}')
     failed = run_jobs(args, jobs)

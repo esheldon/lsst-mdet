@@ -47,6 +47,7 @@ joblist=$1
 nproc=$2
 
 export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
 
 lsst-mdet-process-node \
     --joblist ${joblist} \
@@ -55,8 +56,7 @@ lsst-mdet-process-node \
     --redo-bg \
     --model exp \
     --deblend \
-    --starsub \
-    --mdet
+    --starsub%(mdet)s
 """
 
 SLURM_TEMPLATE = r'''#!/bin/bash
@@ -77,12 +77,15 @@ SLURM_TEMPLATE = r'''#!/bin/bash
 '''
 
 
-def write_script(gaia_pattern):
+def write_script(gaia_pattern, mdet=True):
     fname = 'run.sh'
 
     print('writing:', fname)
     with open(fname, 'w') as fobj:
-        fobj.write(SCRIPT % {'gaia_pattern': gaia_pattern})
+        fobj.write(SCRIPT % {
+            'gaia_pattern': gaia_pattern,
+            'mdet': ' \\\n    --mdet' if mdet else '',
+        })
 
     os.chmod(fname, 0o755)
 
@@ -239,7 +242,7 @@ def go(args):
 
     patches = select_with_gaia(patches, args.gaia_pattern)
 
-    write_script(args.gaia_pattern)
+    write_script(args.gaia_pattern, mdet=not args.no_mdet)
     write_node_jobs(args=args, rng=rng, patches=patches)
 
 
@@ -264,6 +267,10 @@ def get_args():
                              'waves of patches on the node')
     parser.add_argument('--nproc', type=int, default=DEFAULT_NPROC,
                         help='patches to run concurrently on each node')
+    parser.add_argument('--no-mdet', action='store_true',
+                        help='leave out --mdet, e.g. for a quick test on '
+                             'the debug QOS: a patch then takes under 10 '
+                             'minutes instead of 30-40')
     parser.add_argument('--patches-per-node', type=int,
                         help='total patches in each node job; default '
                              'is --nproc, a single wave')
