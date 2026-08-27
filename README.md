@@ -44,7 +44,9 @@ them.  `dev-requirements.txt` adds the test/lint tooling for CI
   single-core job per patch
 - `lsst-mdet-make-gaia` — per-tract Gaia DR3 star files (FITS)
   from the DM reference catalog in the butler, for
-  `--gaia-pattern`; no network access needed
+  `--gaia-pattern`; no network access needed.  Tracts at low
+  galactic latitude (`--min-abs-b`, default |b| < 20) are
+  skipped here and in the NERSC slurm maker
 - `lsst-mdet-make-slurm-nersc` — slurm job generation for
   perlmutter at NERSC: whole-node jobs, each running
   `lsst-mdet-process-node` on a list of patches, with the gaia

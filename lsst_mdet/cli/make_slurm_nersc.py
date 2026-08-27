@@ -16,12 +16,14 @@ The layout matches lsst-mdet-make-slurm for the per-patch outputs
     {tract}/{tract}-{patch}-mdet.*    per-patch outputs and logs
 
 The gaia stars come from per-tract files made by lsst-mdet-make-gaia,
-see --gaia-pattern.  Patches with no gaia file are left out and listed
-in missing-gaia.txt
+see --gaia-pattern.  Tracts at low galactic latitude are left out as
+in lsst-mdet-make-gaia (--min-abs-b) and listed in low-latitude.txt;
+patches with no gaia file are left out and listed in missing-gaia.txt
 """
 import os
 
-from .make_gaia import GAIA_PATTERN
+from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
+from .make_gaia import DEFAULT_MIN_ABS_B, GAIA_PATTERN, select_high_latitude
 from .make_slurm import (
     MAX_SEED,
     get_outfile,
@@ -100,6 +102,37 @@ def get_node_job_file(index, ext):
 
 def get_gaia_file(gaia_pattern, tract, patch):
     return gaia_pattern.format(tract=tract, patch=patch)
+
+
+def select_high_latitude_patches(args, patches):
+    """
+    drop the patches in tracts below the galactic latitude cut; those
+    tracts are written to low-latitude.txt
+    """
+    import numpy as np
+    from lsst.daf.butler import Butler
+
+    if args.min_abs_b <= 0:
+        return patches
+
+    butler = Butler(args.repo, collections=args.collections)
+    skymap = butler.get('skyMap', skymap=SKYMAP_VERS)
+
+    tracts = np.unique(patches['tract']).tolist()
+    _, dropped = select_high_latitude(skymap, tracts, args.min_abs_b)
+
+    if len(dropped) == 0:
+        return patches
+
+    keep = ~np.isin(patches['tract'], dropped)
+    fname = 'low-latitude.txt'
+    print(f'leaving out {(~keep).sum()} patches in {len(dropped)} tracts '
+          f'with galactic latitude |b| < {args.min_abs_b:g}; see {fname}')
+    with open(fname, 'w') as fobj:
+        for tract in dropped:
+            fobj.write(f'{tract}\n')
+
+    return patches[keep]
 
 
 def select_with_gaia(patches, gaia_pattern):
@@ -198,6 +231,7 @@ def go(args):
     with rustfits.FITS(args.good_cells) as fits:
         good_cells = fits[1].read(columns=['tract', 'patch'])
     patches = get_patches(good_cells)
+    patches = select_high_latitude_patches(args, patches)
 
     if args.njobs is not None:
         ri = rng.choice(patches.size, size=args.njobs, replace=False)
@@ -237,6 +271,14 @@ def get_args():
                         help='gaia file pattern with {tract} and '
                              'optionally {patch} placeholders; default '
                              'is the lsst-mdet-make-gaia output')
+    parser.add_argument('--min-abs-b', type=float, default=DEFAULT_MIN_ABS_B,
+                        help='leave out tracts with center galactic '
+                             'latitude |b| below this, in degrees, as '
+                             'lsst-mdet-make-gaia does; 0 to keep all')
+    parser.add_argument('--repo', default=BUTLER_REPO,
+                        help='butler repo, for the skymap')
+    parser.add_argument('--collections', nargs='+',
+                        default=BUTLER_COLLECTIONS)
 
     args = parser.parse_args()
 

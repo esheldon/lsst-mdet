@@ -34,6 +34,13 @@ HTM_LEVEL = 7
 # stored depth; the processing depth is gaia.GMAX
 DEFAULT_GMAX = 21.0
 
+# tracts with center galactic latitude |b| below this are skipped: the
+# star density there makes the star subtraction hopeless and the files
+# huge (up to 500 MB in the bulge, under 25 MB at |b| > 20).  Both
+# this and lsst-mdet-make-slurm-nersc apply it, so the patches are
+# left out of the processing too
+DEFAULT_MIN_ABS_B = 20.0
+
 # beyond the tract bounding circle, to cover the per-patch circles
 # (patch corner radius + 0.02 degrees) at the tract edge
 MARGIN_DEG = 0.05
@@ -79,6 +86,41 @@ OUTPUT_DTYPE = [
 
 def get_gaia_file(tract, outdir=GAIA_DIR):
     return os.path.join(outdir, GAIA_FILE_PATTERN.format(tract=tract))
+
+
+def get_abs_galactic_b(skymap, tracts):
+    """
+    the absolute galactic latitude in degrees of the tract centers
+    """
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
+
+    ra = np.zeros(len(tracts))
+    dec = np.zeros(len(tracts))
+    for i, tract in enumerate(tracts):
+        center = skymap[tract].getCtrCoord()
+        ra[i] = center.getRa().asDegrees()
+        dec[i] = center.getDec().asDegrees()
+
+    coords = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+    return np.abs(coords.galactic.b.deg)
+
+
+def select_high_latitude(skymap, tracts, min_abs_b):
+    """
+    split the tracts by the galactic latitude cut
+
+    Returns
+    -------
+    keep, drop: lists of tracts with |b| >= min_abs_b and below it
+    """
+    if min_abs_b <= 0:
+        return list(tracts), []
+
+    abs_b = get_abs_galactic_b(skymap, tracts)
+    keep = [t for t, b in zip(tracts, abs_b) if b >= min_abs_b]
+    drop = [t for t, b in zip(tracts, abs_b) if b < min_abs_b]
+    return keep, drop
 
 
 def get_tract_circle(skymap, tract):
@@ -240,6 +282,11 @@ def go(args):
         'skyMap', skymap=SKYMAP_VERS, collections=args.collections,
     )
 
+    tracts, dropped = select_high_latitude(skymap, tracts, args.min_abs_b)
+    if len(dropped) > 0:
+        print(f'skipping {len(dropped)} tracts with galactic latitude '
+              f'|b| < {args.min_abs_b:g}; {len(tracts)} remain')
+
     nskip = 0
     for i, tract in enumerate(tracts):
         outfile = get_gaia_file(tract, outdir=args.outdir)
@@ -276,6 +323,9 @@ def get_args():
                              f'{GAIA_FILE_PATTERN}')
     parser.add_argument('--gmax', type=float, default=DEFAULT_GMAX,
                         help='store stars brighter than this in G')
+    parser.add_argument('--min-abs-b', type=float, default=DEFAULT_MIN_ABS_B,
+                        help='skip tracts with center galactic latitude '
+                             '|b| below this, in degrees; 0 to keep all')
     parser.add_argument('--skip-existing', action='store_true',
                         help='skip tracts whose file exists')
     parser.add_argument('--repo', default=BUTLER_REPO)
