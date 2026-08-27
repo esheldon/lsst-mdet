@@ -52,6 +52,8 @@ AUR_SLOPE = -2.0     # canonical scattering-aureole fallback
 AUR_SLOPE_MIN = -3.5  # tier-1 fitted-slope guard
 AUR_SLOPE_MAX = -1.5
 AUR_MIN_STARS = 10   # tier 1 below this falls to tier 2
+AUR_SLOPE_SEP = 1.0  # tier-1 slope kept this much flatter
+#                      than the inner wing (degeneracy guard)
 AUR_BREAK = 80.0     # tier-3 continuity radius
 AUR_AMP_GUARD = 10.0  # fitted amp within this factor of the
 #                       continuity value, else tier 3
@@ -122,6 +124,20 @@ PRE_GROW = 12          # exclusion beyond every star mask
 PRE_GROW_BRIGHT = 128  # exclusion beyond the bright-star masks
 
 NPASS = 3           # joint amplitude passes
+
+# NOTE on per-star local sky references for the amplitude
+# anchors (tried 2026-08, reverted): the i-band monster
+# collars come from local light under the bright stars that
+# the global ambient reference cannot see, but every local
+# referencing scheme tested (two-band pedestal difference,
+# far-band local level, bright-star-only far band) traded
+# that bias for template-shape sensitivity or coupling to the
+# neighbors' model errors, degrading the well-measured faint
+# and mid bins or the z monsters.  The monsters are per-star
+# structure-limited (a handful of stars per field, each with
+# individually different surroundings); the plain ratio
+# anchor with the global ambient reference is the measured
+# optimum
 
 
 def circle_radius(gmag):
@@ -826,7 +842,10 @@ def fit_aureole(rmid, med, count, nstars, slope, ln_a):
     - tier 1 (>= AUR_MIN_STARS measured stars): both slope and
       amplitude are fit; the unknown flux scale of the
       measured cloud cancels in the ratio of the two linear
-      basis coefficients, so no zero point is needed.
+      basis coefficients, so no zero point is needed.  The
+      slope scan is bounded AUR_SLOPE_SEP flatter than the
+      inner wing (degeneracy guard; see the comment in the
+      body).
     - tier 2 (fewer stars): the slope is fixed at AUR_SLOPE
       and only the amplitude is fit.
     - tier 3 (nothing measurable): the amplitude comes from
@@ -884,11 +903,20 @@ def fit_aureole(rmid, med, count, nstars, slope, ln_a):
             )
             return rss, coef[0], coef[1]
 
-        if nstars >= AUR_MIN_STARS:
+        # the aureole is by definition flatter than the inner
+        # wing: bound the slope scan away from the wing slope.
+        # Without the bound the two-component fit can go
+        # degenerate on an aureole-free cloud: a near-parallel
+        # "aureole" duplicating the wing, its amplitude
+        # inflated by the k_in division, passing the guard
+        # because continuity diverges as the slopes converge
+        lo = max(AUR_SLOPE_MIN, slope + AUR_SLOPE_SEP)
+
+        if nstars >= AUR_MIN_STARS and lo < AUR_SLOPE_MAX:
             tier = 1
             best = None
             for s in np.arange(
-                AUR_SLOPE_MIN, AUR_SLOPE_MAX + 1e-9, 0.02,
+                lo, AUR_SLOPE_MAX + 1e-9, 0.02,
             ):
                 fit = linfit(s)
                 if best is None or fit[0] < best[0]:
