@@ -153,16 +153,25 @@ def convert_shard(cat):
 
 def in_circle(circle, ra, dec):
     """
-    which of the positions (degrees) fall in the circle
+    which of the positions (degrees) fall in the circle: the angle
+    to the circle center is within the opening angle, done as a dot
+    product with the center unit vector.  Vectorized; the per-star
+    sphgeom call is far too slow for the millions of stars in a
+    galactic plane tract
     """
-    import lsst.sphgeom as sphgeom
+    center = circle.getCenter()
+    cx, cy, cz = center.x(), center.y(), center.z()
+    cos_radius = np.cos(circle.getOpeningAngle().asRadians())
 
-    return np.array([
-        circle.contains(sphgeom.UnitVector3d(
-            sphgeom.LonLat.fromDegrees(r, d)
-        ))
-        for r, d in zip(ra, dec)
-    ], dtype=bool)
+    rar = np.deg2rad(np.asarray(ra, dtype='f8'))
+    decr = np.deg2rad(np.asarray(dec, dtype='f8'))
+    cosdec = np.cos(decr)
+    cossep = (
+        cx * cosdec * np.cos(rar)
+        + cy * cosdec * np.sin(rar)
+        + cz * np.sin(decr)
+    )
+    return cossep >= cos_radius
 
 
 def make_tract_file(butler, skymap, tract, outfile, gmax):
@@ -188,7 +197,8 @@ def make_tract_file(butler, skymap, tract, outfile, gmax):
         & (stars['phot_g_mean_mag'] < gmax)
     )
     stars = stars[keep]
-    stars.sort(order='source_id')
+    # argsort on the column is much faster than sorting the records
+    stars = stars[np.argsort(stars['source_id'], kind='stable')]
 
     print(f'    tract {tract}: {len(shard_ids)} shards, '
           f'{stars.size} stars to G < {gmax:g}, writing {outfile}')
