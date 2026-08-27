@@ -97,40 +97,64 @@ def fetch_gaia(wcs, bbox, gmax=GMAX):
     return gaia
 
 
-def read_gaia_parquet(fname, wcs, bbox, gmax=GMAX):
+def read_gaia_file(fname, wcs, bbox, gmax=GMAX):
     """
-    gaia stars for this patch from a parquet file with columns
-    gaia_g_mag, ra, dec (degrees), converted to the fetch_gaia
-    layout so everything downstream is unchanged.  The same
-    circle as the TAP query is applied, plus the gmax cut.
+    gaia stars for this patch from a file, converted to the
+    fetch_gaia layout so everything downstream is unchanged.
+    The same circle as the TAP query is applied, plus the gmax
+    cut.
 
-    Columns the file does not carry are filled neutrally: zero
-    proper motion (positions are used as given) and ruwe = 1
-    (the template astrometric-quality guard passes everything).
-
-    Requires pandas with a parquet engine, present in the
-    rubin/stackvana environments
+    FITS files (lsst-mdet-make-gaia output, or any with a table
+    in the first extension) are read with rustfits, parquet
+    files with pandas.  Required columns are ra, dec (degrees)
+    and a G magnitude, phot_g_mean_mag or gaia_g_mag.  Proper
+    motions pmra, pmdec (mas/yr, pmra including cos(dec)) are
+    used when present, else set to zero and the positions used
+    as given.  ruwe is not carried by the files and is set to 1
+    (the template astrometric-quality guard passes everything)
     """
-    import pandas as pd
+    if fname.endswith('.parq') or fname.endswith('.parquet'):
+        import pandas as pd
+        data = pd.read_parquet(fname)
+        columns = list(data.columns)
+    else:
+        import rustfits
+        data = rustfits.read(fname)
+        columns = list(data.dtype.names)
 
-    df = pd.read_parquet(fname, columns=['ra', 'dec', 'gaia_g_mag'])
+    if 'phot_g_mean_mag' in columns:
+        gmag = data['phot_g_mean_mag']
+    else:
+        gmag = data['gaia_g_mag']
+
+    if 'pmra' in columns and 'pmdec' in columns:
+        pmra = data['pmra']
+        pmdec = data['pmdec']
+    else:
+        pmra = None
+        pmdec = None
+
     gaia = gaia_from_columns(
-        ra=df['ra'].to_numpy(dtype='f8'),
-        dec=df['dec'].to_numpy(dtype='f8'),
-        gmag=df['gaia_g_mag'].to_numpy(dtype='f8'),
+        ra=data['ra'],
+        dec=data['dec'],
+        gmag=gmag,
         wcs=wcs,
         bbox=bbox,
         gmax=gmax,
+        pmra=pmra,
+        pmdec=pmdec,
     )
     print(f'    gaia from {fname}: {gaia.size} stars')
     return gaia
 
 
-def gaia_from_columns(ra, dec, gmag, wcs, bbox, gmax=GMAX):
+def gaia_from_columns(
+    ra, dec, gmag, wcs, bbox, gmax=GMAX, pmra=None, pmdec=None,
+):
     """
     build the fetch_gaia structured layout from plain position
     and magnitude arrays, applying the same patch circle as the
-    TAP query and the gmax cut
+    TAP query and the gmax cut.  Proper motions are optional
     """
     xmid = 0.5 * (bbox.x.start + bbox.x.stop)
     ymid = 0.5 * (bbox.y.start + bbox.y.stop)
@@ -140,25 +164,32 @@ def gaia_from_columns(ra, dec, gmag, wcs, bbox, gmax=GMAX):
     )
     rad = ctr.separation(corner).asDegrees() + 0.02
 
+    ra = np.asarray(ra, dtype='f8')
+    dec = np.asarray(dec, dtype='f8')
+    gmag = np.asarray(gmag, dtype='f8')
+
     ra0 = np.deg2rad(ctr.getRa().asDegrees())
     dec0 = np.deg2rad(ctr.getDec().asDegrees())
-    rar = np.deg2rad(np.asarray(ra, dtype='f8'))
-    decr = np.deg2rad(np.asarray(dec, dtype='f8'))
+    rar = np.deg2rad(ra)
+    decr = np.deg2rad(dec)
     cossep = (
         np.sin(dec0) * np.sin(decr)
         + np.cos(dec0) * np.cos(decr) * np.cos(rar - ra0)
     )
     sep = np.rad2deg(np.arccos(np.clip(cossep, -1, 1)))
 
-    w, = np.where((sep <= rad) & (np.asarray(gmag) < gmax))
+    w, = np.where((sep <= rad) & (gmag < gmax))
     gaia = np.zeros(w.size, dtype=[
         ('ra', 'f8'), ('dec', 'f8'),
         ('pmra', 'f8'), ('pmdec', 'f8'),
         ('phot_g_mean_mag', 'f8'), ('ruwe', 'f8'),
     ])
-    gaia['ra'] = np.asarray(ra)[w]
-    gaia['dec'] = np.asarray(dec)[w]
-    gaia['phot_g_mean_mag'] = np.asarray(gmag)[w]
+    gaia['ra'] = ra[w]
+    gaia['dec'] = dec[w]
+    gaia['phot_g_mean_mag'] = gmag[w]
+    if pmra is not None:
+        gaia['pmra'] = np.asarray(pmra, dtype='f8')[w]
+        gaia['pmdec'] = np.asarray(pmdec, dtype='f8')[w]
     gaia['ruwe'] = 1.0
     return gaia
 
