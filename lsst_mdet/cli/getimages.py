@@ -10,7 +10,7 @@ from lsst.daf.butler import Butler
 from ..background import redo_background
 from ..cells import get_cell_centers, get_tract_bounds, make_psf_cube
 from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
-from ..gaia import GMAX, fetch_gaia_or_none, read_gaia_parquet
+from ..gaia import GMAX, fetch_gaia_or_none, read_gaia_file
 from ..io import write_patch_files
 from ..patchfiles import get_patch_filename
 from ..starsub import (
@@ -145,7 +145,7 @@ def main():
             if args.gaia_file is not None:
                 # a bad file is user error: crash, never
                 # degrade
-                gaia = read_gaia_parquet(
+                gaia = read_gaia_file(
                     args.gaia_file, wcs, deep_coadd.bbox,
                     gmax=gmax,
                 )

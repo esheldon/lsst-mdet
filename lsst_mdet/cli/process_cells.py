@@ -1,5 +1,15 @@
 """
 cli/process_cells
+
+process one patch.  The pieces are also used by the node driver
+(process_node), which runs many patches on a node from a single
+process that imports everything once and then forks workers:
+
+    get_parser(): the argument parser, so the driver can accept
+        the same processing options
+    preload(): import everything the processing imports lazily,
+        so the forked workers import nothing
+    process_patch(args): run one patch from a parsed namespace
 """
 import numpy as np
 from ..apodize import apodize_mbobs
@@ -7,7 +17,7 @@ from ..cells import (
     load_coadds_butler, pull_mbobs, get_cell_healsparse_polygon,
     get_tract_primary,
 )
-from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO
+from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
 from ..starsub import GSUB
 from ..hmaps import (
     make_empty_footprint,
@@ -22,14 +32,25 @@ from ..qa import write_star_residual_qa
 from ..wcs import calculate_positions
 
 
-def get_args():
+def get_parser(per_patch=True):
+    """
+    get the argument parser
+
+    Parameters
+    ----------
+    per_patch: bool
+        If True, include the arguments that identify a single patch
+        (--tract, --patch, --seed, --outfile).  The node driver leaves
+        these out and takes them from its job list instead
+    """
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--tract', type=int, required=True)
-    parser.add_argument('--patch', type=int, required=True)
+    if per_patch:
+        parser.add_argument('--tract', type=int, required=True)
+        parser.add_argument('--patch', type=int, required=True)
+        parser.add_argument('--seed', type=int, required=True)
+        parser.add_argument('--outfile', required=True)
     parser.add_argument('--model', required=True)
-    parser.add_argument('--seed', type=int, required=True)
-    parser.add_argument('--outfile', required=True)
     parser.add_argument(
         '--patch-dir',
         help='process from getimages FITS output instead of '
@@ -45,11 +66,18 @@ def get_args():
         '--collections', nargs='+', default=BUTLER_COLLECTIONS,
         help='butler collections to search (butler mode only)',
     )
-    parser.add_argument(
+    gaia = parser.add_mutually_exclusive_group()
+    gaia.add_argument(
         '--gaia-file',
         help='read the gaia stars from this parquet file '
              '(columns gaia_g_mag, ra, dec) instead of the '
              'TAP query (butler mode with --starsub only)',
+    )
+    gaia.add_argument(
+        '--gaia-pattern',
+        help='as --gaia-file, but a pattern with {tract} and '
+             '{patch} placeholders, filled in per patch without '
+             'zero padding, e.g. /path/{tract}/{patch}/gaia.parq',
     )
     parser.add_argument('--deblend', action='store_true')
     parser.add_argument('--s2-detect', action='store_true')
@@ -82,9 +110,132 @@ def get_args():
              'only)',
     )
     parser.add_argument('--mdet', action='store_true')
+    parser.add_argument(
+        '--cells', nargs='+', type=parse_cell,
+        help='process only these cells, given as i,j with 1-20 '
+             'for each, e.g. --cells 10,10 11,12.  Used for '
+             'debugging and for the node driver warmup',
+    )
     parser.add_argument('--progress', action='store_true')
     parser.add_argument('--show', action='store_true')
-    return parser.parse_args()
+    return parser
+
+
+def parse_cell(text):
+    """
+    parse a cell 'i,j' into (i, j)
+    """
+    import argparse
+    try:
+        cell_i, cell_j = (int(v) for v in text.split(','))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f'cell must be i,j, got {text!r}')
+
+    if not (1 <= cell_i <= 20 and 1 <= cell_j <= 20):
+        raise argparse.ArgumentTypeError(
+            f'cell indices must be 1-20, got {text!r}'
+        )
+
+    return cell_i, cell_j
+
+
+def get_args():
+    return get_parser().parse_args()
+
+
+def preload(
+    repo=BUTLER_REPO,
+    collections=BUTLER_COLLECTIONS,
+    tract=None,
+    patch=None,
+    band='r',
+    patch_dir=None,
+):
+    """
+    import everything main() imports lazily, so that a driver which
+    calls this and then forks workers does no further imports in the
+    workers.  The butler is the main offender: opening it, reading the
+    skymap and reading one coadd pulls in about a thousand modules
+    through the registry database layer and the dataset formatters,
+    which are imported on first use.  Give a tract and patch to also
+    warm the coadd formatter.
+
+    In patch_dir mode (--patch-dir) the butler is not used and is
+    skipped.
+
+    This covers the imports but not the numba compilation, which
+    happens at the first call of each jitted function; the driver
+    also runs one cell of a real patch (--cells) before forking so
+    the compiled code is inherited too
+
+    Parameters
+    ----------
+    repo, collections: str, list
+        the butler repo and collections that will be used
+    tract, patch: int, optional
+        a patch to load one coadd from; skipped if not given
+    band: str
+        band of the coadd to load, default 'r'
+    patch_dir: str, optional
+        if set, the processing is file based and the butler is
+        not warmed
+    """
+    import gc
+
+    # the direct lazy imports in the package, and what those pull
+    # in at first use
+    from .. import background  # noqa
+    import ngmix  # noqa
+    import ngmix.moments  # noqa
+    import ngmix.prepsfadmom.prep  # noqa
+    import ngmix.prepsfadmom.full_errors  # noqa
+    import metacal  # noqa
+    import kdeblend  # noqa
+    import kdeblend.vis  # noqa
+    import kdeblend.full_errors  # noqa
+    import fofx  # noqa
+    import fofx.fofs  # noqa
+    import fofx.vis  # noqa
+    import sxdes  # noqa
+    import sxdes.runner  # noqa
+    import sep  # noqa
+    import threadpoolctl  # noqa
+    import healsparse  # noqa
+    import hpgeom  # noqa
+    import pandas  # noqa
+    import tqdm  # noqa
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot  # noqa
+    import matplotlib.backends.backend_agg  # noqa
+    from astropy.visualization import make_lupton_rgb  # noqa
+    from PIL import Image
+    # the format plugins, loaded on the first open/save
+    Image.init()
+
+    if patch_dir is not None:
+        return
+
+    import lsst.geom  # noqa
+    import lsst.images  # noqa
+    import lsst.images._cell_grid  # noqa
+    import lsst.images._geom  # noqa
+    from lsst.daf.butler import Butler
+
+    with Butler(repo, collections=collections) as butler:
+        butler.get('skyMap', skymap=SKYMAP_VERS)
+        if tract is not None and patch is not None:
+            data_id = {
+                'tract': tract, 'patch': patch, 'band': band,
+                'skymap': SKYMAP_VERS,
+            }
+            butler.get('deep_coadd', dataId=data_id)
+
+    # make sure the registry database connection is gone before any
+    # fork: a connection inherited by a child is shared with the parent
+    # and both would be talking on the same socket
+    del butler
+    gc.collect()
 
 
 def main(
@@ -106,8 +257,21 @@ def main(
     gaia_file=None,
     gsub=GSUB,
     apod_stars=True,
+    cells=None,
 ):
+    """
+    process one patch
+
+    Parameters
+    ----------
+    cells: list of (cell_i, cell_j), optional
+        process only these cells, e.g. [(10, 10)].  Default is all
+        20x20 cells
+    """
+    import time
     from tqdm import trange
+
+    tstart = time.time()
 
     rng = np.random.RandomState(seed)
 
@@ -125,10 +289,6 @@ def main(
                 'their effects'
             )
         redo_bg = False
-    elif redo_bg is None:
-        # match the getimages default: the background is
-        # redone unless explicitly disabled
-        redo_bg = True
         (deep_coadds, wcs, starmask, star_table, apod,
          tract_bounds, skyvars) = load_coadds_files(
             patch_dir=patch_dir, tract=tract, patch=patch,
@@ -136,6 +296,11 @@ def main(
         )
     else:
         from lsst.daf.butler import Butler
+
+        if redo_bg is None:
+            # match the getimages default: the background is
+            # redone unless explicitly disabled
+            redo_bg = True
 
         butler = Butler(repo, collections=collections)
         (deep_coadds, wcs, starmask, star_table, apod,
@@ -146,11 +311,18 @@ def main(
             apod_stars=apod_stars,
         )
 
+    # the load is the part that hits the butler and the file system;
+    # reported separately so contention shows up in the logs
+    tload = time.time() - tstart
+    print(f'load time: {tload:.1f} s')
+
     if progress:
         mrng_i = trange(1, 21, desc='cell_i', ncols=80, ascii=True)
-        # mrng_i = trange(17, 18, desc='cell_i', ncols=80, ascii=True)
     else:
         mrng_i = range(1, 21)
+
+    if cells is not None:
+        cells = set(cells)
 
     cell_meta_list = []
     ncell = 0
@@ -164,6 +336,9 @@ def main(
             mrng_j = range(1, 21)
 
         for cell_j in mrng_j:
+            if cells is not None and (cell_i, cell_j) not in cells:
+                continue
+
             ncell += 1
 
             mbobs, cell_meta = pull_mbobs(
@@ -223,9 +398,8 @@ def main(
             nkeep += 1
             dlist.append(cat)
 
-        # break
-
     print(f'kept {nkeep}/{ncell} {nkeep / ncell:g}')
+    print(f'process time: {time.time() - tstart - tload:.1f} s')
 
     cell_meta = np.concatenate(cell_meta_list)
     st = np.concatenate(dlist)
@@ -286,28 +460,47 @@ def main(
         )
 
 
-def main_cli():
-    _args = get_args()
+def get_gaia_file(args):
+    """
+    the gaia file for this patch: --gaia-file as given, or
+    --gaia-pattern filled in with the tract and patch
+    """
+    if args.gaia_pattern is not None:
+        return args.gaia_pattern.format(tract=args.tract, patch=args.patch)
+    return args.gaia_file
+
+
+def process_patch(args):
+    """
+    process one patch from a parsed argument namespace, as returned
+    by get_parser().parse_args() or built by the node driver from its
+    common options plus the per-patch tract, patch, seed and outfile
+    """
     main(
-        with_mdet=_args.mdet,
-        seed=_args.seed,
-        tract=_args.tract,
-        patch=_args.patch,
-        model=_args.model,
-        deblend=_args.deblend,
-        s2_detect=_args.s2_detect,
-        redo_bg=_args.redo_bg,
-        starsub=_args.starsub,
-        patch_dir=_args.patch_dir,
-        outfile=_args.outfile,
-        progress=_args.progress,
-        show=_args.show,
-        repo=_args.repo,
-        collections=_args.collections,
-        gaia_file=_args.gaia_file,
-        gsub=_args.gsub,
-        apod_stars=_args.apod_stars,
+        with_mdet=args.mdet,
+        seed=args.seed,
+        tract=args.tract,
+        patch=args.patch,
+        model=args.model,
+        deblend=args.deblend,
+        s2_detect=args.s2_detect,
+        redo_bg=args.redo_bg,
+        starsub=args.starsub,
+        patch_dir=args.patch_dir,
+        outfile=args.outfile,
+        progress=args.progress,
+        show=args.show,
+        repo=args.repo,
+        collections=args.collections,
+        gaia_file=get_gaia_file(args),
+        gsub=args.gsub,
+        apod_stars=args.apod_stars,
+        cells=args.cells,
     )
+
+
+def main_cli():
+    process_patch(get_args())
 
 
 if __name__ == '__main__':
