@@ -364,3 +364,88 @@ def test_fit_aureole_measured_zero():
         assert tier == tier_want
         bc = np.exp(ln_a) * AUR_BREAK ** (slope - s_aur)
         assert b == pytest.approx(bc / 10.0, rel=1e-6)
+
+
+def test_fit_canonical_amplitude_measurement():
+    # a clean profile at twice the canonical r shape: the
+    # measurement dominates the prior
+    canon = ss.CANON['r']
+    r = np.maximum(np.arange(51).astype(float), 1.0)
+    ped = 3.0e-7
+    prof = (2.0 * np.exp(canon['ln_a']) * r ** canon['slope']
+            + ped)
+    ln_amp, fit_ped = ss.fit_canonical_amplitude(
+        prof, canon, fwhm=canon['fwhm_ref'],
+    )
+    assert ln_amp == pytest.approx(np.log(2.0), abs=0.05)
+    assert fit_ped == pytest.approx(ped, rel=0.2)
+
+
+def test_fit_canonical_amplitude_prior_only():
+    # pure pedestal, no wing signal: the seeing prior stands
+    # alone
+    canon = ss.CANON['r']
+    prof = np.full(51, 5.0e-7)
+    fwhm = canon['fwhm_ref'] + 0.2
+    ln_amp, _ = ss.fit_canonical_amplitude(prof, canon, fwhm)
+    assert ln_amp == pytest.approx(
+        canon['dlna_dfwhm'] * 0.2, abs=1e-6,
+    )
+
+
+def test_canonical_sparse_route():
+    # five template stars rendered from the canonical r shape
+    # at a known amplitude: the canonical route must engage
+    # and the extended template must carry that amplitude
+    rng = np.random.RandomState(11)
+    canon = ss.CANON['r']
+    a_true = 1.6
+    flux = 2.0e5
+
+    gaia, x, y = make_gaia(np.linspace(15.8, 17.2, 5), rng)
+    image = rng.normal(scale=0.3, size=SHAPE)
+    gy, gx = np.mgrid[0:DIM, 0:DIM]
+    for k in range(x.size):
+        rr = np.hypot(gy - y[k], gx - x[k])
+        core = np.exp(-0.5 * (rr / 1.5) ** 2)
+        core /= core.sum()
+        wing = (a_true * np.exp(canon['ln_a'])
+                * np.maximum(rr, 4.0) ** canon['slope'])
+        image += flux * (core + wing * (rr > 6))
+
+    good = np.ones(SHAPE, dtype=bool)
+    seg = np.zeros(SHAPE, dtype='i4')
+    mask0 = np.zeros(SHAPE, dtype='i4')
+    stars = ss.select_stars(gaia, x, y, mask0)
+
+    big = ss.build_template(
+        image, good, seg, gaia, x, y, stars,
+        band='r', fwhm=None,
+    )
+
+    # in the extension region the template is the canonical
+    # law at the fitted amplitude plus the continuity aureole
+    # (a factor (r/AUR_BREAK)^(slope - aur_slope) extra)
+    half = (big.shape[0] - 1) // 2
+    r0 = 40
+    law = np.exp(canon['ln_a']) * r0 ** canon['slope']
+    aur = (np.exp(canon['ln_a'])
+           * AUR_BREAK ** (canon['slope'] + 2.0) * r0 ** -2.0)
+    expected = a_true * (law + aur)
+    got = big[half, half + r0]
+    assert got == pytest.approx(expected, rel=0.25)
+
+
+def test_canonical_needs_min_stamps():
+    # two stamps are below CANON_MIN_STAMPS: still mask-only
+    rng = np.random.RandomState(13)
+    gaia, x, y = make_gaia([16.0, 16.5], rng)
+    image = rng.normal(size=SHAPE)
+    good = np.ones(SHAPE, dtype=bool)
+    seg = np.zeros(SHAPE, dtype='i4')
+    stars = ss.select_stars(gaia, x, y, np.zeros(SHAPE, 'i4'))
+    with pytest.raises(RuntimeError):
+        ss.build_template(
+            image, good, seg, gaia, x, y, stars,
+            band='r', fwhm=1.0,
+        )
