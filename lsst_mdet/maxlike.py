@@ -2,7 +2,7 @@
 maximum-likelihood-only object measurement
 """
 from .colors_and_fluxes import set_colors, set_fluxes
-from .defaults import BAD_BBOX, ZERO_WEIGHTS
+from .defaults import BAD_BBOX, NO_ATTEMPT, ZERO_WEIGHTS
 from .util import get_stamp
 
 
@@ -92,8 +92,8 @@ def fit_ml(st, model, rng, mbobs):
     st['group_size'] = 1
 
     # for these single-object fitters the shape is usable iff the
-    # fit succeeded, and no deblending is involved
-    st['deblend_flags'] = 0
+    # fit succeeded, and no deblending is attempted
+    st['deblend_flags'] = NO_ATTEMPT
     st['group_size'] = 1
 
     if res['flags'] == 0:

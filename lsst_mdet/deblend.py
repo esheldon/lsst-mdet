@@ -348,8 +348,11 @@ def fit_one_group(
 
 def pack_deblend_object(st, obj_res, bands, jacobian):
     """
-    flags, deblend_flags, numiter set outside
+    flags and numiter set outside.  deblend_flags is the kdeblend
+    flag word as is (see kdeblend.flags); it shares the NO_ATTEMPT
+    bit convention with the other flags columns
     """
+    st['deblend_flags'] = obj_res['deblend_flags']
 
     g1, g2, g1_err, g2_err = _e2g(
         e1=obj_res['e1'],
