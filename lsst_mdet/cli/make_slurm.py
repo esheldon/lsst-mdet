@@ -32,6 +32,8 @@ fi
 export OMP_NUM_THREADS=1
 
 /usr/bin/time -v lsst-mdet-process-cells \
+    --repo dp2_prep_future \
+    --collections LSSTCam/runs/DRP/DP2 \
     --seed ${seed} \
     --tract ${tract} \
     --patch ${patch} \
