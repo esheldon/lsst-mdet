@@ -52,9 +52,54 @@ AUR_SLOPE = -2.0     # canonical scattering-aureole fallback
 AUR_SLOPE_MIN = -3.5  # tier-1 fitted-slope guard
 AUR_SLOPE_MAX = -1.5
 AUR_MIN_STARS = 10   # tier 1 below this falls to tier 2
+AUR_SLOPE_SEP = 1.0  # tier-1 slope kept this much flatter
+#                      than the inner wing (degeneracy guard)
 AUR_BREAK = 80.0     # tier-3 continuity radius
 AUR_AMP_GUARD = 10.0  # fitted amp within this factor of the
 #                       continuity value, else tier 3
+
+# canonical per-band template constants, measured from the 15
+# clean (non-crowded) fields of the 19-field DP2 shape study
+# (scratchpad canonical_shape.py, ambient-referenced profiles,
+# 2026-08).  Field-to-field the wing profile is a one-parameter
+# family: a common shape times a per-field amplitude that
+# correlates with the visit-set seeing (the turbulence halo).
+# slope/ln_a: the canonical inner law at unit amplitude
+# (core-normalized template units); the seeing relation for the
+# amplitude prior is ln A = dlna_dfwhm * (fwhm - fwhm_ref) with
+# rms prior_sig about it (raw_sig when no fwhm is available).
+# The canonical aureole is NOT tabulated: it cannot be measured
+# from unrestored images (the production background absorbs the
+# outer wings), so the canonical route uses continuity at
+# AUR_BREAK, the tier-3 convention; remeasure from restored
+# production runs when a body of them exists
+CANON = {
+    'g': dict(
+        slope=-3.800, ln_a=0.292,
+        dlna_dfwhm=1.787, fwhm_ref=1.014,
+        prior_sig=0.217, raw_sig=0.370,
+    ),
+    'r': dict(
+        slope=-3.900, ln_a=0.774,
+        dlna_dfwhm=1.067, fwhm_ref=1.052,
+        prior_sig=0.189, raw_sig=0.206,
+    ),
+    'i': dict(
+        slope=-3.870, ln_a=0.691,
+        dlna_dfwhm=0.919, fwhm_ref=0.968,
+        prior_sig=0.145, raw_sig=0.173,
+    ),
+    'z': dict(
+        slope=-3.880, ln_a=0.666,
+        dlna_dfwhm=2.431, fwhm_ref=0.936,
+        prior_sig=0.120, raw_sig=0.181,
+    ),
+}
+# the canonical sparse-field route: below TMPL_MIN_STAMPS but
+# at least this many stamps, fit one amplitude against the
+# canonical shape (with the seeing prior) instead of the free
+# slope/pedestal/tiered-aureole machinery
+CANON_MIN_STAMPS = 3
 
 # local restoration of the stored 'object' background model.
 # that model absorbs star wings and scattered
@@ -79,6 +124,20 @@ PRE_GROW = 12          # exclusion beyond every star mask
 PRE_GROW_BRIGHT = 128  # exclusion beyond the bright-star masks
 
 NPASS = 3           # joint amplitude passes
+
+# NOTE on per-star local sky references for the amplitude
+# anchors (tried 2026-08, reverted): the i-band monster
+# collars come from local light under the bright stars that
+# the global ambient reference cannot see, but every local
+# referencing scheme tested (two-band pedestal difference,
+# far-band local level, bright-star-only far band) traded
+# that bias for template-shape sensitivity or coupling to the
+# neighbors' model errors, degrading the well-measured faint
+# and mid bins or the z monsters.  The monsters are per-star
+# structure-limited (a handful of stars per field, each with
+# individually different surroundings); the plain ratio
+# anchor with the global ambient reference is the measured
+# optimum
 
 
 def circle_radius(gmag):
@@ -352,7 +411,8 @@ def select_template_stars(gaia, x, y, shape):
     return sel[si][:TMPL_NSTAR]
 
 
-def stack_star_stamps(image, good, seg, x, y, sel):
+def stack_star_stamps(image, good, seg, x, y, sel,
+                      min_stamps=TMPL_MIN_STAMPS):
     """
     Get core-normalized, sub-pixel-aligned median stack of the selected stars,
     point-symmetrized.
@@ -381,8 +441,9 @@ def stack_star_stamps(image, good, seg, x, y, sel):
 
     Raises
     ------
-    RuntimeError when fewer than TMPL_MIN_STAMPS stamps are
-    usable (the caller degrades to mask-only handling)
+    RuntimeError when fewer than min_stamps stamps are usable
+    (the caller degrades to the canonical-shape route or to
+    mask-only handling)
     """
     from scipy import ndimage
 
@@ -423,7 +484,7 @@ def stack_star_stamps(image, good, seg, x, y, sel):
 
         stamps.append(stamp / amp)
 
-    if len(stamps) < TMPL_MIN_STAMPS:
+    if len(stamps) < min_stamps:
         raise RuntimeError(
             f'only {len(stamps)} usable '
             'template stamps'
@@ -485,7 +546,7 @@ def denoise_template(tmpl):
     return tmpl, prof
 
 
-def fit_halo_slope(prof):
+def fit_halo_slope(prof, fallback_slope=HALO_SLOPE):
     """
     Fit the slope of the halo
 
@@ -496,14 +557,17 @@ def fit_halo_slope(prof):
     to the well-measured 22-50 px profile.  The per-stamp sky pedestals survive
     the median stack and bias a plain log-log fit shallow (and
     background-dependent); fitting the pedestal makes the slope
-    background-independent.  A corrupted fit falls back to HALO_SLOPE anchored
-    to the same radii
+    background-independent.  A corrupted fit falls back to
+    fallback_slope anchored to the same radii (the canonical
+    band slope when known, else HALO_SLOPE)
 
     Parameters
     ----------
     prof: array
         The template azimuthal profile, indexed by integer
         radius
+    fallback_slope: float, optional
+        Slope to anchor when the free fit is corrupted
 
     Returns
     -------
@@ -533,10 +597,10 @@ def fit_halo_slope(prof):
     if not (-5.0 < slope < -2.5) or not a > 0:
         print(
             f'    template slope {slope:.2f} out of range, '
-            f'using {HALO_SLOPE}'
+            f'using {fallback_slope}'
         )
 
-        slope = HALO_SLOPE
+        slope = fallback_slope
         _, a, ped = linfit(slope)
 
         if not a > 0:
@@ -582,12 +646,14 @@ def extend_template_halo(
     aur_slope,
     aur_amp,
     out_half=None,
+    r_blend=40.0,
+    r_join=44.0,
 ):
     """
     embed the measured template in a larger stamp whose outer
     halo is the fitted inner power law plus the scattering
-    aureole, with a smooth junction at 40-44 px and an edge
-    taper to zero
+    aureole, with a smooth junction over r_blend to r_join and
+    an edge taper to zero
 
     Parameters
     ----------
@@ -599,6 +665,12 @@ def extend_template_halo(
         The aureole component from fit_aureole
     out_half: int, optional
         Output stamp half size; defaults to TMPL_OUT_HALF
+    r_blend, r_join: float, optional
+        The junction: measured template inside r_blend, the
+        analytic halo beyond r_join, linear blend between.  The
+        canonical sparse route pulls the junction inward so a
+        few-stamp stack only has to carry the region the
+        analytic law cannot describe
 
     Returns
     -------
@@ -629,12 +701,14 @@ def extend_template_halo(
         + aur_amp * rc ** aur_slope
     )
 
-    big[rr >= 44.0] = halo[rr >= 44.0]
+    big[rr >= r_join] = halo[rr >= r_join]
 
     # linear blend from the measured template into the halo
-    # over the 40-44 px junction
-    jfrac = np.clip((rr - 40.0) / 4.0, 0.0, 1.0)
-    inner = rr < 44.0
+    # over the junction
+    jfrac = np.clip(
+        (rr - r_blend) / (r_join - r_blend), 0.0, 1.0,
+    )
+    inner = rr < r_join
 
     big[inner] = (
         (1 - jfrac[inner]) * big[inner]
@@ -768,7 +842,10 @@ def fit_aureole(rmid, med, count, nstars, slope, ln_a):
     - tier 1 (>= AUR_MIN_STARS measured stars): both slope and
       amplitude are fit; the unknown flux scale of the
       measured cloud cancels in the ratio of the two linear
-      basis coefficients, so no zero point is needed.
+      basis coefficients, so no zero point is needed.  The
+      slope scan is bounded AUR_SLOPE_SEP flatter than the
+      inner wing (degeneracy guard; see the comment in the
+      body).
     - tier 2 (fewer stars): the slope is fixed at AUR_SLOPE
       and only the amplitude is fit.
     - tier 3 (nothing measurable): the amplitude comes from
@@ -826,11 +903,20 @@ def fit_aureole(rmid, med, count, nstars, slope, ln_a):
             )
             return rss, coef[0], coef[1]
 
-        if nstars >= AUR_MIN_STARS:
+        # the aureole is by definition flatter than the inner
+        # wing: bound the slope scan away from the wing slope.
+        # Without the bound the two-component fit can go
+        # degenerate on an aureole-free cloud: a near-parallel
+        # "aureole" duplicating the wing, its amplitude
+        # inflated by the k_in division, passing the guard
+        # because continuity diverges as the slopes converge
+        lo = max(AUR_SLOPE_MIN, slope + AUR_SLOPE_SEP)
+
+        if nstars >= AUR_MIN_STARS and lo < AUR_SLOPE_MAX:
             tier = 1
             best = None
             for s in np.arange(
-                AUR_SLOPE_MIN, AUR_SLOPE_MAX + 1e-9, 0.02,
+                lo, AUR_SLOPE_MAX + 1e-9, 0.02,
             ):
                 fit = linfit(s)
                 if best is None or fit[0] < best[0]:
@@ -874,7 +960,165 @@ def fit_aureole(rmid, med, count, nstars, slope, ln_a):
     return float(s_aur), float(b), tier
 
 
-def build_template(image, good, seg, gaia, x, y, stars):
+def psf_cube_fwhm(psfs, scale=0.2):
+    """
+    median half-max FWHM of a psf stamp cube, in arcsec
+
+    Parameters
+    ----------
+    psfs: array
+        (ncell, ny, nx) psf stamps; failed (all-zero) stamps
+        are skipped
+    scale: float, optional
+        Pixel scale in arcsec
+
+    Returns
+    -------
+    float FWHM in arcsec, or None when nothing is measurable
+    """
+    c = (psfs.shape[1] - 1) / 2
+    gy, gx = np.mgrid[0:psfs.shape[1], 0:psfs.shape[2]]
+    rbin = np.round(np.hypot(gy - c, gx - c)).astype(int)
+
+    fwhms = []
+    for p in psfs:
+        peak = p[int(c), int(c)]
+        if not peak > 0:
+            continue
+        prof = np.array([
+            p[rbin == k].mean() for k in range(12)
+        ])
+        below = np.flatnonzero(prof < peak / 2)
+        if below.size == 0:
+            continue
+        k = below[0]
+        f1, f2 = prof[k - 1], prof[k]
+        rhalf = (k - 1) + (f1 - peak / 2) / (f1 - f2)
+        fwhms.append(2 * rhalf * scale)
+
+    if len(fwhms) == 0:
+        return None
+    return float(np.median(fwhms))
+
+
+def measure_coadd_fwhm(deep_coadd):
+    """
+    median PSF FWHM of the coadd in arcsec, for the canonical
+    amplitude prior
+
+    Uses the stored psf cube when present (file mode), else
+    evaluates the psf on a small interior grid (butler mode).
+    Returns None when neither is available; the prior then
+    centers on the canonical mean with the wider raw scatter
+
+    Parameters
+    ----------
+    deep_coadd: deep_coadd
+        The coadd
+
+    Returns
+    -------
+    float FWHM in arcsec, or None
+    """
+    psfs = getattr(deep_coadd, '_psfs', None)
+
+    if psfs is None:
+        psf = getattr(deep_coadd, 'psf', None)
+        bbox = getattr(deep_coadd, 'bbox', None)
+        if psf is None or bbox is None:
+            return None
+        kims = []
+        xs = np.linspace(bbox.x.start, bbox.x.stop - 1, 5)[1:-1]
+        ys = np.linspace(bbox.y.start, bbox.y.stop - 1, 5)[1:-1]
+        for cy in ys:
+            for cx in xs:
+                try:
+                    kims.append(psf.compute_kernel_image(
+                        x=float(cx), y=float(cy)).array)
+                except Exception:
+                    continue
+        if len(kims) == 0:
+            return None
+        psfs = np.array(kims)
+
+    return psf_cube_fwhm(psfs)
+
+
+def fit_canonical_amplitude(prof, canon, fwhm):
+    """
+    one-amplitude fit of a sparse-field profile against the
+    canonical band shape, combined with the seeing prior
+
+    The measured stack profile is fit as
+    amp * canonical_law(r) + pedestal over the 22-50 px wing.
+    The log amplitude is then combined with the seeing prior
+    ln A = dlna_dfwhm * (fwhm - fwhm_ref) by inverse variance;
+    with no usable measurement the prior stands alone
+
+    Parameters
+    ----------
+    prof: array
+        The template azimuthal profile, indexed by integer
+        radius
+    canon: dict
+        The CANON entry for the band
+    fwhm: float or None
+        The coadd median PSF FWHM in arcsec; None widens the
+        prior to the raw field-to-field scatter about zero
+
+    Returns
+    -------
+    ln_amp, pedestal:
+        The posterior log amplitude relative to the canonical
+        shape, and the fitted sky pedestal
+    """
+    rfit = np.arange(22, min(51, prof.size)).astype(float)
+    pfit = prof[rfit.astype(int)]
+
+    law = np.exp(canon['ln_a']) * rfit ** canon['slope']
+    basis = np.vstack([law, np.ones(rfit.size)]).T
+    coef, _, _, _ = np.linalg.lstsq(basis, pfit, rcond=None)
+    amp, ped = float(coef[0]), float(coef[1])
+
+    resid = pfit - basis @ coef
+    dof = max(rfit.size - 2, 1)
+    cov = (np.linalg.inv(basis.T @ basis)
+           * np.sum(resid ** 2) / dof)
+    amp_err = float(np.sqrt(cov[0, 0]))
+
+    if fwhm is not None:
+        lna0 = canon['dlna_dfwhm'] * (fwhm - canon['fwhm_ref'])
+        sig0 = canon['prior_sig']
+    else:
+        lna0 = 0.0
+        sig0 = canon['raw_sig']
+
+    # an informative measurement must be significantly
+    # positive AND a detectable fraction of the profile it was
+    # fit to (a degenerate flat profile yields a machine-noise
+    # amplitude with a spuriously tiny error)
+    floor = 1.0e-3 * float(np.median(np.abs(pfit)))
+
+    if amp > 2.0 * amp_err and amp * law[0] > floor:
+        # combine with the prior by inverse variance; the
+        # error floor keeps an exact fit from claiming
+        # unrealistic precision against per-field systematics
+        lnam = np.log(amp)
+        sigm = max(amp_err / amp, 0.05)
+        ln_amp = (
+            (lnam / sigm ** 2 + lna0 / sig0 ** 2)
+            / (1.0 / sigm ** 2 + 1.0 / sig0 ** 2)
+        )
+    else:
+        # wing lost in the noise: the prior stands alone (the
+        # star wings are there whether measured or not)
+        ln_amp = lna0
+
+    return float(ln_amp), ped
+
+
+def build_template(image, good, seg, gaia, x, y, stars,
+                   band=None, fwhm=None):
     """
     build the empirical extended star template
 
@@ -904,6 +1148,12 @@ def build_template(image, good, seg, gaia, x, y, stars):
     stars: structured array
         The census, for the aureole measurement and the
         template sizing
+    band: str, optional
+        The band, keying the canonical constants; None
+        disables the canonical machinery entirely
+    fwhm: float, optional
+        The coadd median PSF FWHM in arcsec, for the canonical
+        amplitude prior (measure_coadd_fwhm)
 
     Returns
     -------
@@ -912,12 +1162,76 @@ def build_template(image, good, seg, gaia, x, y, stars):
     Raises
     ------
     RuntimeError from stack_star_stamps when the field is too
-    barren for a template
+    barren even for the canonical route (fewer than
+    CANON_MIN_STAMPS stamps, or no canonical constants for the
+    band)
     """
     sel = select_template_stars(gaia, x, y, image.shape)
-    tmpl, nstamp = stack_star_stamps(image, good, seg, x, y, sel)
+    canon = CANON.get(band)
+
+    canonical = False
+    try:
+        tmpl, nstamp = stack_star_stamps(
+            image, good, seg, x, y, sel,
+        )
+    except RuntimeError:
+        if canon is None:
+            raise
+        # the canonical sparse route: too few stamps for the
+        # free fits, but enough to anchor one amplitude
+        # against the canonical band shape
+        tmpl, nstamp = stack_star_stamps(
+            image, good, seg, x, y, sel,
+            min_stamps=CANON_MIN_STAMPS,
+        )
+        canonical = True
+
     tmpl, prof = denoise_template(tmpl)
-    slope, ln_a, ped = fit_halo_slope(prof)
+
+    # the template array is sized for the brightest census
+    # star (plus the stamp shift margin); each star's stamp
+    # windows it to its own extent
+    out_half = TMPL_OUT_HALF
+    if stars.size > 0:
+        out_half = max(
+            template_out_half(float(g)) for g in stars['G']
+        )
+
+    out_half += 2
+
+    if canonical:
+        ln_amp, ped = fit_canonical_amplitude(prof, canon, fwhm)
+        tmpl = tmpl - ped
+
+        slope = canon['slope']
+        ln_a = canon['ln_a'] + ln_amp
+        # the aureole cannot be measured here (nor tabulated,
+        # see CANON); use continuity at the break, the tier-3
+        # convention, at the fitted amplitude
+        aur_slope = AUR_SLOPE
+        aur_amp = float(
+            np.exp(ln_a) * AUR_BREAK ** (slope - aur_slope)
+        )
+
+        # the junction moves inward: a few-stamp stack only
+        # has to carry the region the analytic law cannot
+        # describe
+        big = extend_template_halo(
+            tmpl, slope, ln_a, aur_slope, aur_amp,
+            out_half=out_half, r_blend=18.0, r_join=22.0,
+        )
+        fstr = f'{fwhm:.2f}"' if fwhm is not None else 'n/a'
+        print(
+            f'    canonical template: {nstamp} stamps, '
+            f'ln amp {ln_amp:+.2f} (fwhm {fstr}), '
+            f'pedestal {ped:.1e}, extent {out_half}'
+        )
+        return big
+
+    slope, ln_a, ped = fit_halo_slope(
+        prof,
+        fallback_slope=canon['slope'] if canon else HALO_SLOPE,
+    )
 
     # the sky pedestal is additive and must not scale with a
     # star's amplitude. remove it from the measured region
@@ -931,16 +1245,6 @@ def build_template(image, good, seg, gaia, x, y, stars):
         rmid, med, count, naur, slope, ln_a,
     )
 
-    # the template array is sized for the brightest census
-    # star (plus the stamp shift margin); each star's stamp
-    # windows it to its own extent
-    out_half = TMPL_OUT_HALF
-    if stars.size > 0:
-        out_half = max(
-            template_out_half(float(g)) for g in stars['G']
-        )
-
-    out_half += 2
     big = extend_template_halo(
         tmpl, slope, ln_a, aur_slope, aur_amp,
         out_half=out_half,
@@ -1273,7 +1577,8 @@ def solve_joint_amplitudes(image, slist, zp):
     return model
 
 
-def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
+def subtract_stars(image, var, mask0, gaia, x, y, stars, comps,
+                   band=None, fwhm=None):
     """
     subtract every census star, modifying image in place
 
@@ -1282,6 +1587,14 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
     jointly, guarded by the fixed-slope flux relation.  A field too barren for
     a template degrades to mask-only handling (nothing subtracted, empty work
     list returned)
+
+    The whole solve runs on a working copy referenced to the undetected-pixel
+    median: sky estimators track the mode of the pixel distribution while the
+    unresolved-source carpet skews the median of blank pixels above it, so
+    without the reference the anchor rings measure wing plus that ambient
+    level, and an amplitude that absorbs the ambient over-subtracts everywhere
+    the wing declines (a negative collar just outside every mask, worst in
+    the red bands)
 
     Parameters
     ----------
@@ -1301,6 +1614,12 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
     comps: array
         The labeled SAT/INTRP component image from
         build_star_mask
+    band: str, optional
+        The band, enabling the canonical sparse-field template
+        route (build_template)
+    fwhm: float, optional
+        The coadd median PSF FWHM in arcsec, for the canonical
+        amplitude prior
 
     Returns
     -------
@@ -1318,8 +1637,19 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
     sig = float(np.sqrt(np.median(var[good])))
     seg = field_segmentation(image, good, sig)
 
+    # the ambient sky reference (see the docstring): the
+    # template wings, the aureole cloud, and every ring median
+    # are measured on an ambient-free working copy; the image
+    # itself is only touched by the final model subtraction
+    amb = float(np.median(image[good & (seg == 0)]))
+    print(f'    ambient reference {amb / sig:+.4f} sigma')
+    work = image - amb
+
     try:
-        tmpl = build_template(image, good, seg, gaia, x, y, stars)
+        tmpl = build_template(
+            work, good, seg, gaia, x, y, stars,
+            band=band, fwhm=fwhm,
+        )
     except RuntimeError as err:
         # mask-only fallback. a patch too barren to build a
         # template even at the extended faint limit has next
@@ -1343,13 +1673,13 @@ def subtract_stars(image, var, mask0, gaia, x, y, stars, comps):
 
     for si, st in enumerate(stars):
         entry = make_star_stamp(
-            image, good, comps, tmpl, rr, st, si,
+            work, good, comps, tmpl, rr, st, si,
         )
         if entry is not None:
             slist.append(entry)
 
-    zp = fit_flux_zeropoint(image, slist)
-    model = solve_joint_amplitudes(image, slist, zp)
+    zp = fit_flux_zeropoint(work, slist)
+    model = solve_joint_amplitudes(work, slist, zp)
 
     image -= model
     namp = int(sum(st['A'] > 0 for st in slist))
@@ -1569,10 +1899,17 @@ def handle_stars(
 
         preliminary_background(deep_coadd, dstar, dbright)
 
+        # for the canonical sparse-field route: the band keys
+        # the canonical constants and the psf fwhm centers the
+        # amplitude prior
+        fwhm = measure_coadd_fwhm(deep_coadd)
+
         slist = subtract_stars(
             deep_coadd.image.array,
             deep_coadd.variance.array,
             mask0, gaia, x, y, stars, comps,
+            band=getattr(deep_coadd, 'band', None),
+            fwhm=fwhm,
         )
 
         star_table = make_star_table(stars, slist)

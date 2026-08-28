@@ -250,7 +250,7 @@ def load_coadds_butler(butler, tract, patch, bands,
     """
     from .background import redo_background
     from .defaults import SKYMAP_VERS
-    from .gaia import GMAX, fetch_gaia, read_gaia_parquet
+    from .gaia import GMAX, fetch_gaia, read_gaia_file
     from .starsub import (
         APOD_STARS, BG_GROW, GSUB, apply_star_taper,
         handle_stars,
@@ -291,7 +291,7 @@ def load_coadds_butler(butler, tract, patch, bands,
             if gaia is None:
                 gmax = max(gsub, GMAX)
                 if gaia_file is not None:
-                    gaia = read_gaia_parquet(
+                    gaia = read_gaia_file(
                         gaia_file, wcs, deep_coadd.bbox,
                         gmax=gmax,
                     )
