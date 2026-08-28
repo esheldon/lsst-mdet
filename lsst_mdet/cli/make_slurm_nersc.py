@@ -41,6 +41,7 @@ DEFAULT_NPROC = 128
 DEFAULT_WALLTIME = '03:00:00'
 DEFAULT_QOS = 'regular'
 DEFAULT_CONSTRAINT = 'cpu'
+DEFAULT_ACCOUNT = 'm1727'
 
 SCRIPT = r"""#!/usr/bin/bash
 if [ $# -lt 2 ]; then
@@ -144,6 +145,40 @@ def select_high_latitude_patches(args, patches):
     return patches[keep]
 
 
+def select_in_box(args, good_cells, patch_jobs):
+    """
+    keep the patches with a good cell centered in the --ra-range
+    and --dec-range box; all of them when neither is given
+    """
+    import numpy as np
+
+    if args.ra_range is None and args.dec_range is None:
+        return patch_jobs
+
+    keep = np.ones(good_cells.size, dtype=bool)
+    if args.ra_range is not None:
+        keep &= (
+            (good_cells['ra_center'] >= args.ra_range[0])
+            & (good_cells['ra_center'] <= args.ra_range[1])
+        )
+    if args.dec_range is not None:
+        keep &= (
+            (good_cells['dec_center'] >= args.dec_range[0])
+            & (good_cells['dec_center'] <= args.dec_range[1])
+        )
+
+    in_box = set(zip(
+        good_cells['tract'][keep].tolist(),
+        good_cells['patch'][keep].tolist(),
+    ))
+    selected = [
+        j for j in patch_jobs if (j['tract'], j['patch']) in in_box
+    ]
+    print(f'{len(selected)} patches with a good cell in the box '
+          f'ra {args.ra_range} dec {args.dec_range}')
+    return selected
+
+
 def select_with_gaia(patches, gaia_pattern):
     """
     keep the patches with a gaia file; the rest are written to
@@ -230,10 +265,15 @@ def go(args):
     # good cells kept for the partial patches
     with rustfits.FITS(args.good_cells) as fits:
         good_cells = fits[1].read(
-            columns=['tract', 'patch', 'cell_i', 'cell_j'],
+            columns=[
+                'tract', 'patch', 'cell_i', 'cell_j',
+                'ra_center', 'dec_center',
+            ],
         )
     patch_jobs = group_cells_by_patch(good_cells)
     print(f'{good_cells.size} good cells in {len(patch_jobs)} patches')
+
+    patch_jobs = select_in_box(args, good_cells, patch_jobs)
 
     # the selectors work on a plain (tract, patch) array; map back
     # to the grouped jobs afterward
@@ -274,8 +314,16 @@ def get_args():
     parser.add_argument('--njobs', type=int,
                         help='only generate jobs for this many patches, '
                              'chosen at random')
-    parser.add_argument('--account', required=True,
-                        help='allocation to charge, e.g. des or m1727')
+    parser.add_argument('--ra-range', type=float, nargs=2,
+                        metavar=('RAMIN', 'RAMAX'),
+                        help='only patches with a good cell whose center '
+                             'is in this ra range (degrees)')
+    parser.add_argument('--dec-range', type=float, nargs=2,
+                        metavar=('DECMIN', 'DECMAX'),
+                        help='only patches with a good cell whose center '
+                             'is in this dec range (degrees)')
+    parser.add_argument('--account', default=DEFAULT_ACCOUNT,
+                        help='allocation to charge')
     parser.add_argument('--qos', default=DEFAULT_QOS)
     parser.add_argument('--constraint', default=DEFAULT_CONSTRAINT)
     parser.add_argument('--walltime', default=DEFAULT_WALLTIME,
