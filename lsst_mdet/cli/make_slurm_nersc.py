@@ -266,7 +266,10 @@ def get_args():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('--good-cells', default='good-cells.fits')
+    parser.add_argument('--good-cells', required=True,
+                        help='the good-cells fits file (one row per '
+                             'good cell); required so a stale '
+                             'default cannot be picked up silently')
     parser.add_argument('--seed', type=int, required=True)
     parser.add_argument('--njobs', type=int,
                         help='only generate jobs for this many patches, '
