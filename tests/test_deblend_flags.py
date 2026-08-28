@@ -7,12 +7,11 @@ import numpy as np
 import pytest
 
 from lsst_mdet.defaults import NO_ATTEMPT
-from lsst_mdet.structs import get_struct, get_kdeblend_struct
+from lsst_mdet.structs import get_struct
 
 
-@pytest.mark.parametrize('maker', [get_struct, get_kdeblend_struct])
-def test_column_initializes_to_no_attempt(maker):
-    st = maker(['r', 'i'], 3)
+def test_column_initializes_to_no_attempt():
+    st = get_struct(['r', 'i'], 3)
     assert np.all(st['deblend_flags'] == NO_ATTEMPT)
     assert np.all(st['flags'] == NO_ATTEMPT)
 

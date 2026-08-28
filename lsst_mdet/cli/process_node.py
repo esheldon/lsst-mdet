@@ -27,15 +27,17 @@ import os
 import sys
 import time
 
-from .process_cells import get_parser, preload, process_patch
+from .process_cells import get_parser, parse_cell, preload, process_patch
 
 DEFAULT_WARMUP_CELLS = [(10, 10), (11, 11)]
 
 
 def read_joblist(fname):
     """
-    read the job list, one 'seed tract patch outfile' per line.  Blank
-    lines and lines starting with # are skipped
+    read the job list, one 'seed tract patch outfile [cells...]' per
+    line, where the optional trailing 'i,j' cells restrict a partial
+    patch to its good cells.  Blank lines and lines starting with #
+    are skipped
     """
     jobs = []
     with open(fname) as fobj:
@@ -45,18 +47,21 @@ def read_joblist(fname):
                 continue
 
             fields = line.split()
-            if len(fields) != 4:
+            if len(fields) < 4:
                 raise ValueError(
-                    f'expected "seed tract patch outfile", got {line!r}'
+                    f'expected "seed tract patch outfile [cells...]", '
+                    f'got {line!r}'
                 )
 
-            seed, tract, patch, outfile = fields
+            seed, tract, patch, outfile = fields[:4]
+            cells = [parse_cell(f) for f in fields[4:]]
             jobs.append({
                 'seed': int(seed),
                 'tract': int(tract),
                 'patch': int(patch),
                 'outfile': outfile,
                 'logfile': get_logfile(outfile),
+                'cells': cells if len(cells) > 0 else None,
             })
 
     return jobs
@@ -70,8 +75,9 @@ def get_logfile(outfile):
 def get_job_args(args, job, outfile=None, cells=None):
     """
     the per-patch namespace: the common processing options plus this
-    job's seed, tract, patch and outfile.  cells overrides args.cells,
-    which is used by the warmup
+    job's seed, tract, patch and outfile.  The cells override (used
+    by the warmup) wins over the job's own cells (a partial patch
+    from the job list), which wins over args.cells
     """
     import argparse
 
@@ -82,6 +88,8 @@ def get_job_args(args, job, outfile=None, cells=None):
     job_args.outfile = job['outfile'] if outfile is None else outfile
     if cells is not None:
         job_args.cells = cells
+    elif job.get('cells') is not None:
+        job_args.cells = job['cells']
     return job_args
 
 

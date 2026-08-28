@@ -11,6 +11,9 @@ The layout matches lsst-mdet-make-slurm for the per-patch outputs
     seed.txt                          the seed used to generate the jobs
     run.sh                            runs the node driver on a job list
     nodejobs/nodejob-0000-mdet.txt    job list: seed tract patch outfile
+                                      [cells...], the trailing i,j
+                                      cells restricting a partial
+                                      patch to its good cells
     nodejobs/nodejob-0000-mdet.slurm  the slurm script for that node
     nodejobs/nodejob-0000-mdet.log    slurm output for that node
     {tract}/{tract}-{patch}-mdet.*    per-patch outputs and logs
@@ -26,7 +29,9 @@ from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
 from .make_gaia import DEFAULT_MIN_ABS_B, GAIA_PATTERN, select_high_latitude
 from .make_slurm import (
     MAX_SEED,
+    format_cells,
     get_outfile,
+    group_cells_by_patch,
     write_seed,
 )
 
@@ -113,10 +118,11 @@ def select_high_latitude_patches(args, patches):
     tracts are written to low-latitude.txt
     """
     import numpy as np
-    from lsst.daf.butler import Butler
 
     if args.min_abs_b <= 0:
         return patches
+
+    from lsst.daf.butler import Butler
 
     butler = Butler(args.repo, collections=args.collections)
     skymap = butler.get('skyMap', skymap=SKYMAP_VERS)
@@ -167,10 +173,11 @@ def select_with_gaia(patches, gaia_pattern):
     return patches[has_gaia]
 
 
-def write_node_jobs(args, rng, patches):
+def write_node_jobs(args, rng, patch_jobs):
     """
     write the job lists and slurm scripts, args.patches_per_node
-    patches per node
+    patches per node.  A partial patch's job line carries its good
+    cells as trailing i,j fields
     """
     node_dir = get_node_job_dir()
     os.makedirs(node_dir, exist_ok=True)
@@ -178,7 +185,7 @@ def write_node_jobs(args, rng, patches):
     per_node = args.patches_per_node
 
     nnodes = 0
-    for start in range(0, patches.size, per_node):
+    for start in range(0, len(patch_jobs), per_node):
         index = nnodes
         nnodes += 1
 
@@ -186,12 +193,13 @@ def write_node_jobs(args, rng, patches):
         slurm_file = get_node_job_file(index, 'slurm')
 
         with open(joblist, 'w') as fobj:
-            for p in patches[start:start + per_node]:
-                tract = p['tract']
-                patch = p['patch']
+            for job in patch_jobs[start:start + per_node]:
+                tract = job['tract']
+                patch = job['patch']
                 seed = rng.choice(MAX_SEED)
                 outfile = get_outfile(tract=tract, patch=patch)
-                fobj.write(f'{seed} {tract} {patch} {outfile}\n')
+                cells = format_cells(job['cells'])
+                fobj.write(f'{seed} {tract} {patch} {outfile}{cells}\n')
 
         job_text = SLURM_TEMPLATE % {
             'job_name': get_node_job_name(index),
@@ -206,21 +214,9 @@ def write_node_jobs(args, rng, patches):
         with open(slurm_file, 'w') as fobj:
             fobj.write(job_text)
 
-    print(f'wrote {nnodes} node jobs for {patches.size} patches in '
+    print(f'wrote {nnodes} node jobs for {len(patch_jobs)} patches in '
           f'{node_dir}/ ({per_node} patches per node, {args.nproc} at a '
           f'time)')
-
-
-def get_patches(good_cells):
-    """
-    the unique (tract, patch) pairs in the good cells list, which has
-    one row per cell
-    """
-    import numpy as np
-
-    patches = np.unique(good_cells[['tract', 'patch']])
-    print(f'{good_cells.size} good cells in {patches.size} patches')
-    return patches
 
 
 def go(args):
@@ -230,10 +226,24 @@ def go(args):
     write_seed(args.seed)
     rng = np.random.RandomState(args.seed)
 
-    # one row per cell; only the patch ids are needed
+    # one row per good cell; group to one job per patch, with the
+    # good cells kept for the partial patches
     with rustfits.FITS(args.good_cells) as fits:
-        good_cells = fits[1].read(columns=['tract', 'patch'])
-    patches = get_patches(good_cells)
+        good_cells = fits[1].read(
+            columns=['tract', 'patch', 'cell_i', 'cell_j'],
+        )
+    patch_jobs = group_cells_by_patch(good_cells)
+    print(f'{good_cells.size} good cells in {len(patch_jobs)} patches')
+
+    # the selectors work on a plain (tract, patch) array; map back
+    # to the grouped jobs afterward
+    jobmap = {(j['tract'], j['patch']): j for j in patch_jobs}
+    patches = np.zeros(
+        len(patch_jobs), dtype=[('tract', 'i8'), ('patch', 'i8')],
+    )
+    patches['tract'] = [j['tract'] for j in patch_jobs]
+    patches['patch'] = [j['patch'] for j in patch_jobs]
+
     patches = select_high_latitude_patches(args, patches)
 
     if args.njobs is not None:
@@ -242,8 +252,12 @@ def go(args):
 
     patches = select_with_gaia(patches, args.gaia_pattern)
 
+    patch_jobs = [
+        jobmap[(int(p['tract']), int(p['patch']))] for p in patches
+    ]
+
     write_script(args.gaia_pattern, mdet=not args.no_mdet)
-    write_node_jobs(args=args, rng=rng, patches=patches)
+    write_node_jobs(args=args, rng=rng, patch_jobs=patch_jobs)
 
 
 def get_args():

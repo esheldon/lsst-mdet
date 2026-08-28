@@ -88,7 +88,7 @@ def fit_deblend(
     cat: array with fields
         One row per sxcat detection, followed by one row per
         extra detection (in extra_detections order); see
-        fitting.get_kdeblend_struct
+        structs.get_struct
     keep: bool array
         Which rows of sxcat were kept (all of them; the stamp
         cutting clips at edges rather than failing).  Length

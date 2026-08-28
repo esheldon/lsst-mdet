@@ -7,8 +7,8 @@ from .defaults import NO_ATTEMPT
 
 def get_struct(bands, n=1):
     """
-    Get the output structure for the single-object fitters (am,
-    gauss, wmom).  The kdeblend fitter uses get_kdeblend_struct
+    Get the output structure, shared by the single-object
+    fitters (am, gauss, wmom) and the kdeblend deblender
 
     Parameters
     ----------
