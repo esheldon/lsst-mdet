@@ -258,6 +258,12 @@ def run_jobs(args, jobs):
             log(f'started tract {job["tract"]} patch {job["patch"]} '
                 f'pid {pid} running {len(running)} pending {len(pending)}')
 
+            # spread the starts so a node's loads (each opening a
+            # butler registry connection and reading its coadds) do
+            # not all hit the database and file system at once
+            if pending and len(running) < args.nproc:
+                time.sleep(args.start_interval)
+
         pid, status, rusage = os.wait4(-1, 0)
         job, t0 = running.pop(pid)
         ndone += 1
@@ -333,6 +339,11 @@ def get_args():
                            'per line')
     node.add_argument('--nproc', type=int, required=True,
                       help='number of patches to process concurrently')
+    node.add_argument('--start-interval', type=float, default=0.5,
+                      help='seconds between starting patches, to spread '
+                           'the load stage (butler registry connections, '
+                           'coadd reads) over time; 0 to start them as '
+                           'fast as cores free up')
     node.add_argument('--skip-existing', action='store_true',
                       help='skip patches whose outfile already exists')
     node.add_argument('--no-warmup', action='store_true',

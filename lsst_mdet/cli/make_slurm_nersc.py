@@ -43,6 +43,10 @@ DEFAULT_QOS = 'regular'
 DEFAULT_CONSTRAINT = 'cpu'
 DEFAULT_ACCOUNT = 'm1727'
 
+# seconds between patch starts in the driver: 128 loads spread over
+# about a minute rather than hitting the butler registry at once
+DEFAULT_START_INTERVAL = 0.5
+
 # cells in a full patch (the 20x20 cell grid)
 NCELLS_FULL = 400
 
@@ -69,6 +73,7 @@ export OPENBLAS_NUM_THREADS=1
 lsst-mdet-process-node \
     --joblist ${joblist} \
     --nproc ${nproc} \
+    --start-interval %(start_interval)g \
     --gaia-pattern '%(gaia_pattern)s' \
     --redo-bg \
     --model exp \
@@ -117,6 +122,7 @@ def write_script(gaia_pattern, mdet=True):
     with open(fname, 'w') as fobj:
         fobj.write(SCRIPT % {
             'gaia_pattern': gaia_pattern,
+            'start_interval': DEFAULT_START_INTERVAL,
             'mdet': ' \\\n    --mdet' if mdet else '',
         })
 
