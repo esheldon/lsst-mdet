@@ -43,6 +43,16 @@ DEFAULT_QOS = 'regular'
 DEFAULT_CONSTRAINT = 'cpu'
 DEFAULT_ACCOUNT = 'm1727'
 
+# cells in a full patch (the 20x20 cell grid)
+NCELLS_FULL = 400
+
+# the fixed per-patch cost, the three-band load and star subtraction
+# (about 45 s), in cell equivalents at the ~5.5 s per cell of the mdet
+# processing measured at 128 patches per node; weights the patch
+# count in a --cells-per-node budget so nodes of many small patches
+# do not run long
+LOAD_CELL_EQUIV = 10
+
 SCRIPT = r"""#!/usr/bin/bash
 if [ $# -lt 2 ]; then
     echo "./run.sh joblist nproc"
@@ -208,27 +218,72 @@ def select_with_gaia(patches, gaia_pattern):
     return patches[has_gaia]
 
 
+def get_job_cells(job):
+    """
+    the number of good cells a patch job processes
+    """
+    return NCELLS_FULL if job['cells'] is None else len(job['cells'])
+
+
+def get_job_load(job):
+    """
+    the work of a patch job in cell equivalents: its cells plus the
+    fixed per-patch cost
+    """
+    return get_job_cells(job) + LOAD_CELL_EQUIV
+
+
+def chunk_jobs(args, patch_jobs):
+    """
+    split the patch jobs into per-node lists: a fixed
+    --patches-per-node, or a --cells-per-node budget on the
+    load-weighted cell count.  For the budget the jobs are first
+    sorted by size, so the patches on a node are alike: a wave then
+    finishes together instead of waiting on its one full patch, and
+    a node of small patches holds correspondingly more of them
+    """
+    if args.cells_per_node is None:
+        n = args.patches_per_node
+        return [patch_jobs[i:i + n] for i in range(0, len(patch_jobs), n)]
+
+    jobs = sorted(patch_jobs, key=get_job_load, reverse=True)
+
+    nodes = []
+    current = []
+    load = 0
+    for job in jobs:
+        w = get_job_load(job)
+        if current and load + w > args.cells_per_node:
+            nodes.append(current)
+            current = []
+            load = 0
+        current.append(job)
+        load += w
+    if current:
+        nodes.append(current)
+
+    return nodes
+
+
 def write_node_jobs(args, rng, patch_jobs):
     """
-    write the job lists and slurm scripts, args.patches_per_node
-    patches per node.  A partial patch's job line carries its good
-    cells as trailing i,j fields
+    write the job lists and slurm scripts, one per node list from
+    chunk_jobs.  A partial patch's job line carries its good cells
+    as trailing i,j fields
     """
+    import numpy as np
+
     node_dir = get_node_job_dir()
     os.makedirs(node_dir, exist_ok=True)
 
-    per_node = args.patches_per_node
+    node_lists = chunk_jobs(args, patch_jobs)
 
-    nnodes = 0
-    for start in range(0, len(patch_jobs), per_node):
-        index = nnodes
-        nnodes += 1
-
+    for index, jobs in enumerate(node_lists):
         joblist = get_node_job_file(index, 'txt')
         slurm_file = get_node_job_file(index, 'slurm')
 
         with open(joblist, 'w') as fobj:
-            for job in patch_jobs[start:start + per_node]:
+            for job in jobs:
                 tract = job['tract']
                 patch = job['patch']
                 seed = rng.choice(MAX_SEED)
@@ -249,9 +304,20 @@ def write_node_jobs(args, rng, patch_jobs):
         with open(slurm_file, 'w') as fobj:
             fobj.write(job_text)
 
-    print(f'wrote {nnodes} node jobs for {len(patch_jobs)} patches in '
-          f'{node_dir}/ ({per_node} patches per node, {args.nproc} at a '
-          f'time)')
+    npatches = np.array([len(jobs) for jobs in node_lists])
+    loads = np.array([
+        sum(get_job_load(job) for job in jobs) for jobs in node_lists
+    ])
+    if args.cells_per_node is None:
+        how = f'{args.patches_per_node} patches per node'
+    else:
+        how = f'{args.cells_per_node} load-weighted cells per node'
+    print(f'wrote {len(node_lists)} node jobs for {len(patch_jobs)} patches '
+          f'in {node_dir}/ ({how}, {args.nproc} at a time)')
+    print(f'    patches per node: min {npatches.min()} median '
+          f'{int(np.median(npatches))} max {npatches.max()}; '
+          f'load-weighted cells per node: min {loads.min()} median '
+          f'{int(np.median(loads))} max {loads.max()}')
 
 
 def go(args):
@@ -336,9 +402,19 @@ def get_args():
                         help='leave out --mdet, e.g. for a quick test on '
                              'the debug QOS: a patch then takes under 10 '
                              'minutes instead of 30-40')
-    parser.add_argument('--patches-per-node', type=int,
-                        help='total patches in each node job; default '
-                             'is --nproc, a single wave')
+    packing = parser.add_mutually_exclusive_group()
+    packing.add_argument('--patches-per-node', type=int,
+                         help='total patches in each node job; default '
+                              'is --nproc, a single wave')
+    packing.add_argument('--cells-per-node', type=int,
+                         help='instead pack each node to this many '
+                              'load-weighted good cells (the cells plus '
+                              f'{LOAD_CELL_EQUIV} per patch for the fixed '
+                              'load cost), with patches of similar size '
+                              'together; a node of full patches then '
+                              'holds about cells/'
+                              f'{NCELLS_FULL + LOAD_CELL_EQUIV} patches, '
+                              'e.g. 52000 for one 128-wide wave')
     parser.add_argument('--gaia-pattern', default=GAIA_PATTERN,
                         help='gaia file pattern with {tract} and '
                              'optionally {patch} placeholders; default '
@@ -356,10 +432,15 @@ def get_args():
 
     if args.nproc < 1:
         parser.error('--nproc must be >= 1')
-    if args.patches_per_node is None:
-        args.patches_per_node = args.nproc
-    if args.patches_per_node < 1:
-        parser.error('--patches-per-node must be >= 1')
+    if args.cells_per_node is not None:
+        if args.cells_per_node < NCELLS_FULL + LOAD_CELL_EQUIV:
+            parser.error('--cells-per-node must hold at least one full '
+                         f'patch, {NCELLS_FULL + LOAD_CELL_EQUIV}')
+    else:
+        if args.patches_per_node is None:
+            args.patches_per_node = args.nproc
+        if args.patches_per_node < 1:
+            parser.error('--patches-per-node must be >= 1')
 
     return args
 
