@@ -46,12 +46,13 @@ DEFAULT_ACCOUNT = 'm1727'
 # cells in a full patch (the 20x20 cell grid)
 NCELLS_FULL = 400
 
-# the fixed per-patch cost, the three-band load and star subtraction
-# (about 45 s), in cell equivalents at the ~5.5 s per cell of the mdet
-# processing measured at 128 patches per node; weights the patch
-# count in a --cells-per-node budget so nodes of many small patches
-# do not run long
-LOAD_CELL_EQUIV = 10
+# the fixed per-patch cost, the three-band load and star subtraction,
+# in cell equivalents: 45 s at high galactic latitude and 90 s in
+# fields with 50k stars per tract (|b| ~ 22-28), against ~5.8 s per
+# cell of mdet processing, all measured at 128 patches per node.
+# Weights the patch count in a --cells-per-node budget so cores with
+# many small patches do not run long; sized for the dense case
+LOAD_CELL_EQUIV = 15
 
 SCRIPT = r"""#!/usr/bin/bash
 if [ $# -lt 2 ]; then
@@ -83,14 +84,30 @@ SLURM_TEMPLATE = r'''#!/bin/bash
 #SBATCH --qos=%(qos)s
 #SBATCH --constraint=%(constraint)s
 
-# one whole node; the driver forks the per-patch workers itself
-#SBATCH --nodes=1
-#SBATCH --exclusive
+%(resources)s
 
 #SBATCH --time=%(time)s
 
 ./run.sh %(joblist)s %(nproc)d
 '''
+
+# the driver forks the per-patch workers itself, so one task: a
+# whole node on the regular QOS, or on the shared QOS (charged per
+# core, for the stragglers of a region) two cpus, i.e. one physical
+# core, per patch and memory for the patches
+NODE_RESOURCES = '''# one whole node
+#SBATCH --nodes=1
+#SBATCH --exclusive'''
+
+SHARED_RESOURCES = '''# a slice of a node, one physical core per patch
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=%(cpus)d
+#SBATCH --mem=%(mem_gb)dG'''
+
+# memory per patch on the shared QOS: 3 GB peak seen in dense fields
+DEFAULT_MEM_PER_PATCH_GB = 4
+SHARED_MAX_NPROC = 64
 
 
 def write_script(gaia_pattern, mdet=True):
@@ -106,17 +123,54 @@ def write_script(gaia_pattern, mdet=True):
     os.chmod(fname, 0o755)
 
 
-def get_node_job_dir():
-    return 'nodejobs'
+def get_node_job_dir(args=None):
+    return 'nodejobs' if args is None else args.jobs_dir
 
 
 def get_node_job_name(index):
     return f'nodejob-{index:04d}-mdet'
 
 
-def get_node_job_file(index, ext):
+def get_node_job_file(args, index, ext):
     job_name = get_node_job_name(index)
-    return os.path.join(get_node_job_dir(), f'{job_name}.{ext}')
+    return os.path.join(get_node_job_dir(args), f'{job_name}.{ext}')
+
+
+def is_done(job):
+    """
+    a patch is done when its catalog and the footprint written after
+    it both exist; a job killed mid-write leaves the catalog alone
+    """
+    outfile = get_outfile(tract=job['tract'], patch=job['patch'])
+    footprint = outfile.replace('.fits', '-footprint.hsp')
+    return os.path.exists(outfile) and os.path.exists(footprint)
+
+
+def select_not_done(args, patch_jobs):
+    """
+    leave out the patches already done in this directory, unless
+    --redo
+    """
+    if args.redo:
+        return patch_jobs
+
+    todo = [job for job in patch_jobs if not is_done(job)]
+    ndone = len(patch_jobs) - len(todo)
+    if ndone > 0:
+        print(f'{ndone} patches already done here, {len(todo)} to go')
+    return todo
+
+
+def get_resources(args):
+    """
+    the resource lines of the slurm script for the QOS
+    """
+    if args.qos == 'shared':
+        return SHARED_RESOURCES % {
+            'cpus': 2 * args.nproc,
+            'mem_gb': args.mem_per_patch * args.nproc,
+        }
+    return NODE_RESOURCES
 
 
 def get_gaia_file(gaia_pattern, tract, patch):
@@ -237,32 +291,58 @@ def chunk_jobs(args, patch_jobs):
     """
     split the patch jobs into per-node lists: a fixed
     --patches-per-node, or a --cells-per-node budget on the
-    load-weighted cell count.  For the budget the jobs are first
-    sorted by size, so the patches on a node are alike: a wave then
-    finishes together instead of waiting on its one full patch, and
-    a node of small patches holds correspondingly more of them
+    load-weighted cell count.
+
+    The budget is applied per core, cells_per_node / nproc each,
+    because a patch is indivisible: the driver runs nproc patches at
+    a time and a core that gets a second full patch runs for two
+    patch times, however small the node total.  The jobs are sorted
+    by size and each goes to the least loaded core of the current
+    node if it fits there (a core always takes at least one patch);
+    otherwise a new node is started.  The patches on a node are thus
+    alike, a wave finishes together rather than waiting on its one
+    full patch, and a node of small patches holds correspondingly
+    more of them, several per core
     """
     if args.cells_per_node is None:
         n = args.patches_per_node
         return [patch_jobs[i:i + n] for i in range(0, len(patch_jobs), n)]
 
     jobs = sorted(patch_jobs, key=get_job_load, reverse=True)
+    per_core = args.cells_per_node / args.nproc
 
     nodes = []
     current = []
-    load = 0
+    cores = None
     for job in jobs:
         w = get_job_load(job)
-        if current and load + w > args.cells_per_node:
+        if cores is not None:
+            i = min(range(args.nproc), key=cores.__getitem__)
+            if cores[i] == 0 or cores[i] + w <= per_core:
+                cores[i] += w
+                current.append(job)
+                continue
             nodes.append(current)
-            current = []
-            load = 0
-        current.append(job)
-        load += w
+        cores = [0.0] * args.nproc
+        cores[0] = w
+        current = [job]
     if current:
         nodes.append(current)
 
     return nodes
+
+
+def node_core_loads(args, jobs):
+    """
+    the per-core load-weighted cells the driver would see for a
+    node list, by the same least-loaded-core placement as chunk_jobs
+    (jobs in list order, as the driver starts them)
+    """
+    cores = [0.0] * args.nproc
+    for job in jobs:
+        i = min(range(args.nproc), key=cores.__getitem__)
+        cores[i] += get_job_load(job)
+    return cores
 
 
 def write_node_jobs(args, rng, patch_jobs):
@@ -273,14 +353,15 @@ def write_node_jobs(args, rng, patch_jobs):
     """
     import numpy as np
 
-    node_dir = get_node_job_dir()
+    node_dir = get_node_job_dir(args)
     os.makedirs(node_dir, exist_ok=True)
 
     node_lists = chunk_jobs(args, patch_jobs)
+    resources = get_resources(args)
 
     for index, jobs in enumerate(node_lists):
-        joblist = get_node_job_file(index, 'txt')
-        slurm_file = get_node_job_file(index, 'slurm')
+        joblist = get_node_job_file(args, index, 'txt')
+        slurm_file = get_node_job_file(args, index, 'slurm')
 
         with open(joblist, 'w') as fobj:
             for job in jobs:
@@ -293,10 +374,11 @@ def write_node_jobs(args, rng, patch_jobs):
 
         job_text = SLURM_TEMPLATE % {
             'job_name': get_node_job_name(index),
-            'logfile': get_node_job_file(index, 'log'),
+            'logfile': get_node_job_file(args, index, 'log'),
             'account': args.account,
             'qos': args.qos,
             'constraint': args.constraint,
+            'resources': resources,
             'time': args.walltime,
             'joblist': joblist,
             'nproc': args.nproc,
@@ -308,16 +390,23 @@ def write_node_jobs(args, rng, patch_jobs):
     loads = np.array([
         sum(get_job_load(job) for job in jobs) for jobs in node_lists
     ])
+    # the busiest core sets the node wall time
+    core_max = np.array([
+        max(node_core_loads(args, jobs)) for jobs in node_lists
+    ])
     if args.cells_per_node is None:
         how = f'{args.patches_per_node} patches per node'
     else:
-        how = f'{args.cells_per_node} load-weighted cells per node'
+        how = (f'{args.cells_per_node} load-weighted cells per node, '
+               f'{args.cells_per_node / args.nproc:.0f} per core')
     print(f'wrote {len(node_lists)} node jobs for {len(patch_jobs)} patches '
           f'in {node_dir}/ ({how}, {args.nproc} at a time)')
     print(f'    patches per node: min {npatches.min()} median '
           f'{int(np.median(npatches))} max {npatches.max()}; '
           f'load-weighted cells per node: min {loads.min()} median '
-          f'{int(np.median(loads))} max {loads.max()}')
+          f'{int(np.median(loads))} max {loads.max()}; '
+          f'busiest core: min {core_max.min():.0f} median '
+          f'{np.median(core_max):.0f} max {core_max.max():.0f}')
 
 
 def go(args):
@@ -361,6 +450,10 @@ def go(args):
     patch_jobs = [
         jobmap[(int(p['tract']), int(p['patch']))] for p in patches
     ]
+    patch_jobs = select_not_done(args, patch_jobs)
+    if len(patch_jobs) == 0:
+        print('nothing to do')
+        return
 
     write_script(args.gaia_pattern, mdet=not args.no_mdet)
     write_node_jobs(args=args, rng=rng, patch_jobs=patch_jobs)
@@ -390,8 +483,22 @@ def get_args():
                              'is in this dec range (degrees)')
     parser.add_argument('--account', default=DEFAULT_ACCOUNT,
                         help='allocation to charge')
-    parser.add_argument('--qos', default=DEFAULT_QOS)
+    parser.add_argument('--qos', default=DEFAULT_QOS,
+                        help='regular for whole nodes; shared, charged '
+                             'per core, for the stragglers of a region, '
+                             f'with --nproc at most {SHARED_MAX_NPROC}')
+    parser.add_argument('--mem-per-patch', type=int,
+                        default=DEFAULT_MEM_PER_PATCH_GB,
+                        help='GB per patch requested on the shared QOS')
     parser.add_argument('--constraint', default=DEFAULT_CONSTRAINT)
+    parser.add_argument('--jobs-dir', default='nodejobs',
+                        help='directory for the job lists, slurm scripts '
+                             'and logs; use a new one for a follow-up '
+                             'batch so the earlier logs are kept')
+    parser.add_argument('--redo', action='store_true',
+                        help='include patches already done in this '
+                             'directory (catalog and footprint present); '
+                             'by default they are left out')
     parser.add_argument('--walltime', default=DEFAULT_WALLTIME,
                         help='walltime for each node job, e.g. 03:00:00. '
                              'This must cover the warmup and all the '
@@ -410,11 +517,13 @@ def get_args():
                          help='instead pack each node to this many '
                               'load-weighted good cells (the cells plus '
                               f'{LOAD_CELL_EQUIV} per patch for the fixed '
-                              'load cost), with patches of similar size '
-                              'together; a node of full patches then '
-                              'holds about cells/'
-                              f'{NCELLS_FULL + LOAD_CELL_EQUIV} patches, '
-                              'e.g. 52000 for one 128-wide wave')
+                              'load cost), applied per core as '
+                              'cells/nproc, with patches of similar size '
+                              'together.  A core always takes one patch, '
+                              'so a node of full patches holds nproc of '
+                              'them, and a node of small patches several '
+                              'per core; e.g. 52000 at nproc 128 is one '
+                              'full patch per core')
     parser.add_argument('--gaia-pattern', default=GAIA_PATTERN,
                         help='gaia file pattern with {tract} and '
                              'optionally {patch} placeholders; default '
@@ -432,6 +541,9 @@ def get_args():
 
     if args.nproc < 1:
         parser.error('--nproc must be >= 1')
+    if args.qos == 'shared' and args.nproc > SHARED_MAX_NPROC:
+        parser.error(f'--nproc on the shared QOS is at most '
+                     f'{SHARED_MAX_NPROC} (half a node)')
     if args.cells_per_node is not None:
         if args.cells_per_node < NCELLS_FULL + LOAD_CELL_EQUIV:
             parser.error('--cells-per-node must hold at least one full '
