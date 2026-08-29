@@ -16,6 +16,16 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
     """
     pull a MultiBandObsList from the input deep_coadds for the indicated cell.
 
+    The bad pixels (non-finite variance, DM_OUT mask bits, and
+    the star attenuation zone) are unioned across the bands, so
+    every band is built on one shared footprint: a pixel with
+    good data in only some bands would otherwise feed the joint
+    fitting unbalanced information, and can produce zero-variance
+    measurements in the bands lacking data.  The cell is kept
+    when the shared good fraction exceeds MIN_GOOD_FRAC, which
+    subsumes a per-band check: the shared fraction is at most
+    the smallest per-band fraction
+
     Parameters
     ----------
     deep_coadds: list
@@ -35,7 +45,10 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
     Returns
     -------
     mbobs, cell_meta:
-        The MultiBandObsList and a cell info struct (see structs.py)
+        The MultiBandObsList and a cell info struct (see
+        structs.py).  cell_meta good_frac holds each band's own
+        good fraction, showing which band drives any union loss;
+        the shared fraction actually used goes to the obs meta
     """
 
     import ngmix
@@ -47,13 +60,17 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
 
     mbobs = ngmix.MultiBandObsList()
 
+    # first pass: the per-band good sets
+    bboxes = []
+    goods = []
+    weight_vars = []
     for iband, deep_coadd in enumerate(deep_coadds):
         bbox = deep_coadd.cell_window(cell_i, cell_j, CELL_OVERLAP)
 
         var = deep_coadd.variance[bbox].array.copy()
         mask = deep_coadd.mask[bbox].array[:, :, 0]
 
-        good = np.isfinite(var) & (mask & DM_OUT == 0)
+        good_band = np.isfinite(var) & (mask & DM_OUT == 0)
 
         pb = deep_coadd.bbox
         patch_cut = np.s_[
@@ -63,13 +80,11 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
             bbox.x.stop - pb.x.start,
         ]
 
-        smcut = None
         if starmask is not None:
             # the star attenuation zone (patch-frame array)
             # carries no usable signal after subtraction and
             # apodization
-            smcut = starmask[patch_cut]
-            good &= ~smcut
+            good_band &= ~starmask[patch_cut]
 
         # weights come from the sky-variance map when there is
         # one: the variance plane's object poisson term would
@@ -78,64 +93,71 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
         if skyvars is not None and skyvars[iband] is not None:
             weight_var = skyvars[iband][patch_cut]
 
-        w = np.where(good)
-        good_frac = w[0].size / var.size
-        cell_meta['good_frac'][0, iband] = good_frac
+        cell_meta['good_frac'][0, iband] = good_band.mean()
 
-        if good_frac > MIN_GOOD_FRAC:
+        bboxes.append(bbox)
+        goods.append(good_band)
+        weight_vars.append(weight_var)
 
-            noise = deep_coadd.noise_realizations[0][bbox].array.copy()
-            mfrac = deep_coadd.mask_fractions["rejected"][bbox].array.copy()
-            if smcut is not None:
-                # the star zone is fully masked for selection
-                # purposes, matching the cell-edge apodization
-                # convention
-                mfrac[smcut] = 1.0
-            image = deep_coadd.image[bbox].array.copy()
+    # one shared footprint for every band
+    good = np.logical_and.reduce(goods)
+    good_frac = float(good.mean())
 
-            xmid = 0.5 * (bbox.x.start + bbox.x.stop)
-            ymid = 0.5 * (bbox.y.start + bbox.y.stop)
+    if good_frac <= MIN_GOOD_FRAC:
+        return None, cell_meta
 
-            psf_image = deep_coadd.psf_image(xmid, ymid)
-            if psf_image is None:
-                break
+    for iband, deep_coadd in enumerate(deep_coadds):
+        bbox = bboxes[iband]
 
-            cell_jacobian = get_cell_jacobian(
-                wcs=wcs, bbox=bbox, x=xmid, y=ymid,
-            )
-            obs = _make_cell_obs(
-                image=image,
-                weight_var=weight_var,
-                good=good,
-                noise=noise,
-                mfrac=mfrac,
-                psf_image=psf_image,
-                jacobian=cell_jacobian,
-            )
-            obs.meta['good_frac'] = good_frac
-            obs.meta['bbox'] = bbox
-            obs.meta['band'] = deep_coadd.band
+        noise = deep_coadd.noise_realizations[0][bbox].array.copy()
+        mfrac = deep_coadd.mask_fractions["rejected"][bbox].array.copy()
+        # every pixel outside the shared footprint is fully
+        # masked for selection purposes, matching the cell-edge
+        # apodization convention; this includes the star
+        # attenuation zone
+        mfrac[~good] = 1.0
+        image = deep_coadd.image[bbox].array.copy()
 
-            nbad = np.isnan(noise).sum()
-            if nbad > 0:
-                print(f'cell_i: {cell_i} cell_j: {cell_j} iband: {iband}')
-                print(f'  found {nbad} / {noise.size} nan in noise')
-                break
+        xmid = 0.5 * (bbox.x.start + bbox.x.stop)
+        ymid = 0.5 * (bbox.y.start + bbox.y.stop)
 
-            sigma_band = get_detect_noise(
-                noise=noise,
-                kernel=make_kernel(),
-                weight=obs.weight,
-            )
-            medwt = np.median(obs.weight[obs.weight > 0])
-            obs.weight = obs.weight / (sigma_band ** 2 * medwt)
-
-            obslist = ngmix.ObsList()
-            obslist.append(obs)
-            mbobs.append(obslist)
-        else:
-            # print(f'    good frac {good_frac} < {MIN_GOOD_FRAC}')
+        psf_image = deep_coadd.psf_image(xmid, ymid)
+        if psf_image is None:
             break
+
+        cell_jacobian = get_cell_jacobian(
+            wcs=wcs, bbox=bbox, x=xmid, y=ymid,
+        )
+        obs = _make_cell_obs(
+            image=image,
+            weight_var=weight_vars[iband],
+            good=good,
+            noise=noise,
+            mfrac=mfrac,
+            psf_image=psf_image,
+            jacobian=cell_jacobian,
+        )
+        obs.meta['good_frac'] = good_frac
+        obs.meta['bbox'] = bbox
+        obs.meta['band'] = deep_coadd.band
+
+        nbad = np.isnan(noise).sum()
+        if nbad > 0:
+            print(f'cell_i: {cell_i} cell_j: {cell_j} iband: {iband}')
+            print(f'  found {nbad} / {noise.size} nan in noise')
+            break
+
+        sigma_band = get_detect_noise(
+            noise=noise,
+            kernel=make_kernel(),
+            weight=obs.weight,
+        )
+        medwt = np.median(obs.weight[obs.weight > 0])
+        obs.weight = obs.weight / (sigma_band ** 2 * medwt)
+
+        obslist = ngmix.ObsList()
+        obslist.append(obs)
+        mbobs.append(obslist)
 
     if len(mbobs) < len(deep_coadds):
         return None, cell_meta
@@ -239,7 +261,9 @@ def load_coadds_butler(butler, tract, patch, bands,
     """
     load the deep coadds for a patch from the butler, with the
     optional star subtraction and background redetermination
-    applied in that order.  Returns
+    applied in that order.  The star-region taper uses the
+    union of the per-band star masks, so the attenuation zones
+    match across the bands.  Returns
     (coadds, wcs, starmask, star_table, apod, tract_bounds,
     skyvars) with the coadds wrapped for pull_mbobs, the wcs
     wrapped for the jacobian helper, the star census and taper
@@ -273,7 +297,7 @@ def load_coadds_butler(butler, tract, patch, bands,
 
     coadds = []
     gaia = None
-    starmasks = []
+    dstar_min = None
     star_table = None
     skyvars = []
     for band in bands:
@@ -302,7 +326,10 @@ def load_coadds_butler(butler, tract, patch, bands,
             # the getimages sequence: subtract, background,
             # then the taper LAST, so the star holes stay
             # exactly zero (tapering first would leave -bkg
-            # inside them after the background subtraction)
+            # inside them after the background subtraction).
+            # The taper is further deferred to after this loop:
+            # its distance field must be shared across the
+            # bands so the attenuation zones match
             starmask_b, stable_b, dstar = handle_stars(
                 deep_coadd, wcs, gaia, gsub=gsub,
                 subtract=True,
@@ -316,11 +343,12 @@ def load_coadds_butler(butler, tract, patch, bands,
                 skyvar = redo_background(
                     deep_coadd, starmask=dstar < BG_GROW,
                 )
-            if apod_stars:
-                apply_star_taper(
-                    deep_coadd, dstar, width=APOD_STARS,
-                )
-            starmasks.append(dstar < APOD_STARS)
+            # the distance to the union of the per-band star
+            # masks is the minimum of the per-band distances
+            if dstar_min is None:
+                dstar_min = dstar
+            else:
+                np.minimum(dstar_min, dstar, out=dstar_min)
         elif redo_bg:
             skyvar = redo_background(deep_coadd, starmask=None)
         else:
@@ -328,13 +356,19 @@ def load_coadds_butler(butler, tract, patch, bands,
         skyvars.append(skyvar)
         coadds.append(ButlerCoadd(deep_coadd))
 
-    # one mask for all bands: consistent footprints downstream
+    # one mask and one taper for all bands: consistent
+    # footprints downstream, and matching attenuation zones in
+    # the images and noise
     starmask = None
     apod = 0.0
     if starsub:
-        starmask = np.logical_or.reduce(starmasks)
         if apod_stars:
+            for coadd in coadds:
+                apply_star_taper(
+                    coadd, dstar_min, width=APOD_STARS,
+                )
             apod = APOD_STARS
+        starmask = dstar_min < APOD_STARS
         print(f'union star mask fraction {starmask.mean():.3f}')
 
     return (

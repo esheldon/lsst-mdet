@@ -40,23 +40,23 @@ def save_nobg_png(deep_coadd, fname):
         fig.savefig(png)
 
 
-def prepare_band(deep_coadd, wcs, gaia, args):
+def prepare_band_stars(deep_coadd, wcs, gaia, args):
     """
-    star handling, background redetermination, and star-region
-    apodization for one band, modifying the coadd in place.
+    star handling and background redetermination for one band,
+    modifying the coadd in place.  The star-region taper is NOT
+    applied here: its distance field must be shared across the
+    bands so the attenuation zones match (see main)
 
-    Returns (starmask_plane, apod, star_table, skyvar): the
-    three valued starmask output plane (None without star
-    handling), the taper width actually applied, the gaia
-    census table with fitted amplitudes (None unless
+    Returns (dstar, star_table, skyvar): the distance transform
+    off this band's star mask (None without star handling), the
+    gaia census table with fitted amplitudes (None unless
     subtracting), and the sky-variance map for the pixel
     weights (None without the background redo)
     """
-    starmask = None
     star_table = None
     dstar = None
     if gaia is not None:
-        starmask, star_table, dstar = handle_stars(
+        _, star_table, dstar = handle_stars(
             deep_coadd, wcs, gaia,
             gsub=args.gsub, subtract=args.starsub,
         )
@@ -78,18 +78,7 @@ def prepare_band(deep_coadd, wcs, gaia, args):
               'written, and processing will fall back to the '
               'raw variance plane for pixel weights')
 
-    # apodize AFTER the background determination
-    apod = 0.0
-    if args.starsub and args.apod_stars and dstar is not None:
-        apply_star_taper(deep_coadd, dstar, width=APOD_STARS)
-        apod = APOD_STARS
-
-    starmask_plane = None
-    if starmask is not None and args.starsub:
-        starmask_plane = make_starmask_plane(
-            starmask, dstar, apod,
-        )
-    return starmask_plane, apod, star_table, skyvar
+    return dstar, star_table, skyvar
 
 
 def main():
@@ -101,23 +90,28 @@ def main():
     if not os.path.exists(args.patch_dir):
         os.makedirs(args.patch_dir, exist_ok=True)
 
+    bands = ['g', 'r', 'i', 'z']
+    fnames = {
+        band: get_patch_filename(
+            tract=tract, patch=patch, band=band,
+            patch_dir=args.patch_dir,
+        )
+        for band in bands
+    }
+    if all(os.path.exists(f) for f in fnames.values()):
+        print('all band files exist')
+        return
+
     butler = Butler(args.repo, collections=args.collections)
     skymap = butler.get("skyMap", skymap=SKYMAP_VERS)
     tract_info = skymap[tract]
     wcs = tract_info.wcs
     tract_bounds = get_tract_bounds(tract_info)
 
-    gaia = None
-    gaia_failed = False
-    for band in ['g', 'r', 'i', 'z']:
-        fname = get_patch_filename(
-            tract=tract, patch=patch, band=band,
-            patch_dir=args.patch_dir,
-        )
-        if os.path.exists(fname):
-            print(f'{fname} already exists')
-            continue
-
+    # load every available band first: the shared star taper
+    # couples the bands, so the work cannot proceed band by band
+    coadds = {}
+    for band in bands:
         data_id = {
             "band": band,
             "skymap": SKYMAP_VERS,
@@ -134,35 +128,83 @@ def main():
             # band.  Anything else is a bug and should crash
             print(f'{type(err).__name__}: {err}')
             continue
+        coadds[band] = deep_coadd
 
-        # outside the band try/except: with --starsub a gaia
-        # failure must abort the run (fetch_gaia_or_none
-        # raises), never silently skip the subtraction.
-        # Without it, degrade once and do not retry per band
-        if gaia is None and not gaia_failed \
-                and (args.starsub or args.redo_bg):
-            gmax = max(args.gsub, GMAX)
-            if args.gaia_file is not None:
-                # a bad file is user error: crash, never
-                # degrade
-                gaia = read_gaia_file(
-                    args.gaia_file, wcs, deep_coadd.bbox,
-                    gmax=gmax,
-                )
-            else:
-                gaia = fetch_gaia_or_none(
-                    wcs, deep_coadd.bbox, gmax=gmax,
-                    require=args.starsub,
-                )
-                if gaia is None:
-                    gaia_failed = True
+    if len(coadds) == 0:
+        print('no bands available')
+        return
 
-        # a sparse-field template failure degrades to
-        # mask-only inside subtract_stars, so any error here
-        # is a bug and should crash
-        starmask_plane, apod, star_table, skyvar = prepare_band(
+    if all(os.path.exists(fnames[band]) for band in coadds):
+        print('all available band files exist')
+        return
+
+    nexist = sum(os.path.exists(fnames[band]) for band in coadds)
+    if nexist > 0:
+        print(f'{nexist} band files exist; rewriting all: the '
+              'shared star taper couples the bands')
+
+    # gaia once, from the first available band's bbox (the
+    # patch bbox is the same in every band).  With --starsub a
+    # gaia failure must abort the run (fetch_gaia_or_none
+    # raises), never silently skip the subtraction
+    gaia = None
+    first_coadd = next(iter(coadds.values()))
+    if args.starsub or args.redo_bg:
+        gmax = max(args.gsub, GMAX)
+        if args.gaia_file is not None:
+            # a bad file is user error: crash, never degrade
+            gaia = read_gaia_file(
+                args.gaia_file, wcs, first_coadd.bbox,
+                gmax=gmax,
+            )
+        else:
+            gaia = fetch_gaia_or_none(
+                wcs, first_coadd.bbox, gmax=gmax,
+                require=args.starsub,
+            )
+
+    # per-band star handling and background; the taper is
+    # deferred until every band's mask is known.  A sparse-field
+    # template failure degrades to mask-only inside
+    # subtract_stars, so any error here is a bug and should
+    # crash
+    star_tables = {}
+    skyvars = {}
+    dstar_min = None
+    for band, deep_coadd in coadds.items():
+        print(f'star handling and background: {band}')
+        dstar, star_table, skyvar = prepare_band_stars(
             deep_coadd, wcs, gaia, args,
         )
+        star_tables[band] = star_table
+        skyvars[band] = skyvar
+        if dstar is not None:
+            # the distance to the union of the per-band star
+            # masks is the minimum of the per-band distances
+            if dstar_min is None:
+                dstar_min = dstar
+            else:
+                np.minimum(dstar_min, dstar, out=dstar_min)
+
+    # one taper and one starmask plane for every band, from the
+    # union distance field; apodize AFTER the background
+    # determination
+    apod = 0.0
+    starmask_plane = None
+    if args.starsub and dstar_min is not None:
+        if args.apod_stars:
+            for deep_coadd in coadds.values():
+                apply_star_taper(
+                    deep_coadd, dstar_min, width=APOD_STARS,
+                )
+            apod = APOD_STARS
+        # dstar_min == 0 exactly on the union of the star masks
+        starmask_plane = make_starmask_plane(
+            dstar_min == 0, dstar_min, apod,
+        )
+
+    for band, deep_coadd in coadds.items():
+        fname = fnames[band]
 
         # psf at every cell center
         xs, ys, (csx, csy), how = get_cell_centers(deep_coadd)
@@ -198,10 +240,10 @@ def main():
             cell_size=(csx, csy),
             starmask_plane=starmask_plane,
             apod=apod,
-            star_table=star_table,
+            star_table=star_tables[band],
             gsub=args.gsub,
             minrad=MINRAD,
-            skyvar=skyvar,
+            skyvar=skyvars[band],
         )
 
 
