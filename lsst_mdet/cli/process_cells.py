@@ -516,12 +516,22 @@ def main(
     )
 
     # stacked residual profiles of the subtracted stars: flat
-    # and zero means the subtraction left nothing behind
+    # and zero means the subtraction left nothing behind.  The
+    # catalog, footprint and color image are already written, so
+    # a failure here (e.g. the sep sub-object overflow seen on an
+    # image artifact) must not turn a finished patch into a
+    # failed job: warn and go on without the QA figure
     if star_table is not None and star_table.size > 0:
-        write_star_residual_qa(
-            outfile.replace('.fits', '-star-residuals.png'),
-            deep_coadds, star_table, starmask,
-        )
+        try:
+            write_star_residual_qa(
+                outfile.replace('.fits', '-star-residuals.png'),
+                deep_coadds, star_table, starmask,
+            )
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            print('WARNING: star residual QA failed, '
+                  'continuing without it')
 
 
 def get_gaia_file(args):
