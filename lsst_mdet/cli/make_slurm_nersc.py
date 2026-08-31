@@ -18,6 +18,14 @@ The layout matches lsst-mdet-make-slurm for the per-patch outputs
     nodejobs/nodejob-0000-mdet.log    slurm output for that node
     {tract}/{tract}-{patch}-mdet.*    per-patch outputs and logs
 
+With --array one job array script nodejobs/array-mdet.slurm replaces
+the per-node slurm scripts: task N runs job list N, writing the same
+per-node log.  --throttle bounds the tasks running at once, and so
+the nodes loading from the butler registry at the same time; it can
+be changed on a submitted array with
+
+    scontrol update jobid=<id> arraytaskthrottle=<n>
+
 The gaia stars come from per-tract files made by lsst-mdet-make-gaia,
 see --gaia-pattern.  Tracts at low galactic latitude are left out as
 in lsst-mdet-make-gaia (--min-abs-b) and listed in low-latitude.txt;
@@ -96,6 +104,31 @@ SLURM_TEMPLATE = r'''#!/bin/bash
 ./run.sh %(joblist)s %(nproc)d
 '''
 
+# one job array over the node job lists: task N runs list N and
+# writes its log, the %%4a in the output pattern zero padding the
+# task id to match the list names
+ARRAY_TEMPLATE = r'''#!/bin/bash
+#SBATCH --job-name=%(job_name)s
+#SBATCH --output %(node_dir)s/nodejob-%%4a-mdet.log
+#SBATCH --array=0-%(last)d%%%(throttle)d
+
+#SBATCH --account=%(account)s
+#SBATCH --qos=%(qos)s
+#SBATCH --constraint=%(constraint)s
+
+%(resources)s
+
+#SBATCH --time=%(time)s
+
+joblist=$(printf '%(node_dir)s/nodejob-%%04d-mdet.txt' ${SLURM_ARRAY_TASK_ID})
+./run.sh ${joblist} %(nproc)d
+'''
+
+# array tasks running at once: 19 nodes loading together were fine
+# for the butler registry with no connection retries; the driver
+# retries on a refused connection in any case
+DEFAULT_THROTTLE = 32
+
 # the driver forks the per-patch workers itself, so one task: a
 # whole node on the regular QOS, or on the shared QOS (charged per
 # core, for the stragglers of a region) two cpus, i.e. one physical
@@ -140,6 +173,10 @@ def get_node_job_name(index):
 def get_node_job_file(args, index, ext):
     job_name = get_node_job_name(index)
     return os.path.join(get_node_job_dir(args), f'{job_name}.{ext}')
+
+
+def get_array_file(args):
+    return os.path.join(get_node_job_dir(args), 'array-mdet.slurm')
 
 
 def is_done(job):
@@ -351,11 +388,69 @@ def node_core_loads(args, jobs):
     return cores
 
 
+def write_joblist(args, rng, index, jobs):
+    """
+    write the job list for one node.  A partial patch's job line
+    carries its good cells as trailing i,j fields
+    """
+    joblist = get_node_job_file(args, index, 'txt')
+    with open(joblist, 'w') as fobj:
+        for job in jobs:
+            tract = job['tract']
+            patch = job['patch']
+            seed = rng.choice(MAX_SEED)
+            outfile = get_outfile(tract=tract, patch=patch)
+            cells = format_cells(job['cells'])
+            fobj.write(f'{seed} {tract} {patch} {outfile}{cells}\n')
+    return joblist
+
+
+def write_node_slurm(args, index, joblist):
+    """
+    write the slurm script for one node job
+    """
+    job_text = SLURM_TEMPLATE % {
+        'job_name': get_node_job_name(index),
+        'logfile': get_node_job_file(args, index, 'log'),
+        'account': args.account,
+        'qos': args.qos,
+        'constraint': args.constraint,
+        'resources': get_resources(args),
+        'time': args.walltime,
+        'joblist': joblist,
+        'nproc': args.nproc,
+    }
+    with open(get_node_job_file(args, index, 'slurm'), 'w') as fobj:
+        fobj.write(job_text)
+
+
+def write_array_slurm(args, nnodes):
+    """
+    write the job array script over the nnodes job lists
+    """
+    node_dir = get_node_job_dir(args)
+    job_text = ARRAY_TEMPLATE % {
+        'job_name': f'{os.path.basename(node_dir)}-mdet',
+        'node_dir': node_dir,
+        'last': nnodes - 1,
+        'throttle': args.throttle,
+        'account': args.account,
+        'qos': args.qos,
+        'constraint': args.constraint,
+        'resources': get_resources(args),
+        'time': args.walltime,
+        'nproc': args.nproc,
+    }
+    fname = get_array_file(args)
+    with open(fname, 'w') as fobj:
+        fobj.write(job_text)
+    return fname
+
+
 def write_node_jobs(args, rng, patch_jobs):
     """
-    write the job lists and slurm scripts, one per node list from
-    chunk_jobs.  A partial patch's job line carries its good cells
-    as trailing i,j fields
+    write the job lists, one per node list from chunk_jobs, and the
+    slurm scripts: one per node, or with --array a single job array
     """
     import numpy as np
 
@@ -363,34 +458,16 @@ def write_node_jobs(args, rng, patch_jobs):
     os.makedirs(node_dir, exist_ok=True)
 
     node_lists = chunk_jobs(args, patch_jobs)
-    resources = get_resources(args)
 
     for index, jobs in enumerate(node_lists):
-        joblist = get_node_job_file(args, index, 'txt')
-        slurm_file = get_node_job_file(args, index, 'slurm')
+        joblist = write_joblist(args, rng, index, jobs)
+        if not args.array:
+            write_node_slurm(args, index, joblist)
 
-        with open(joblist, 'w') as fobj:
-            for job in jobs:
-                tract = job['tract']
-                patch = job['patch']
-                seed = rng.choice(MAX_SEED)
-                outfile = get_outfile(tract=tract, patch=patch)
-                cells = format_cells(job['cells'])
-                fobj.write(f'{seed} {tract} {patch} {outfile}{cells}\n')
-
-        job_text = SLURM_TEMPLATE % {
-            'job_name': get_node_job_name(index),
-            'logfile': get_node_job_file(args, index, 'log'),
-            'account': args.account,
-            'qos': args.qos,
-            'constraint': args.constraint,
-            'resources': resources,
-            'time': args.walltime,
-            'joblist': joblist,
-            'nproc': args.nproc,
-        }
-        with open(slurm_file, 'w') as fobj:
-            fobj.write(job_text)
+    if args.array:
+        fname = write_array_slurm(args, len(node_lists))
+        print(f'wrote job array {fname} with {len(node_lists)} tasks, '
+              f'{args.throttle} running at once')
 
     npatches = np.array([len(jobs) for jobs in node_lists])
     loads = np.array([
@@ -501,6 +578,17 @@ def get_args():
                         help='directory for the job lists, slurm scripts '
                              'and logs; use a new one for a follow-up '
                              'batch so the earlier logs are kept')
+    parser.add_argument('--array', action='store_true',
+                        help='write one job array script, '
+                             'array-mdet.slurm in --jobs-dir, instead '
+                             'of a slurm script per node; task N runs '
+                             'job list N')
+    parser.add_argument('--throttle', type=int, default=DEFAULT_THROTTLE,
+                        help='with --array, the tasks running at once; '
+                             'bounds the nodes loading from the butler '
+                             'registry together.  Adjustable on a '
+                             'submitted array with scontrol update '
+                             'jobid=<id> arraytaskthrottle=<n>')
     parser.add_argument('--redo', action='store_true',
                         help='include patches already done in this '
                              'directory (catalog and footprint present); '
@@ -547,6 +635,8 @@ def get_args():
 
     if args.nproc < 1:
         parser.error('--nproc must be >= 1')
+    if args.throttle < 1:
+        parser.error('--throttle must be >= 1')
     if args.qos == 'shared' and args.nproc > SHARED_MAX_NPROC:
         parser.error(f'--nproc on the shared QOS is at most '
                      f'{SHARED_MAX_NPROC} (half a node)')
