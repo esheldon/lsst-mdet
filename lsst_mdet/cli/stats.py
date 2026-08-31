@@ -132,7 +132,7 @@ def _do_sums_by_field(
         sums['n'][0, binnum] += 1
         sums['wsum'][0, binnum] += wt
 
-        sums['bin_field'][0, binnum] += wt * this_binval
+        sums['binval'][0, binnum] += wt * this_binval
         sums['g1'][0, binnum] += wt * g1[iobj]
         sums['g2'][0, binnum] += wt * g2[iobj]
 
@@ -161,7 +161,7 @@ def _get_sum_struct(nbin):
     dtype = [
         ('n', 'i8', nbin),
         ('wsum', 'f8', nbin),
-        ('bin_field', 'f8', nbin),
+        ('binval', 'f8', nbin),
         ('g1', 'f8', nbin),
         ('g2', 'f8', nbin),
     ]
@@ -312,8 +312,8 @@ def _get_mean_struct(n, nbin):
     import numpy as np
 
     dtype = [
-        ('bin_field', 'f8', nbin),
-        ('bin_field_err', 'f8', nbin),
+        ('binval', 'f8', nbin),
+        ('binval_err', 'f8', nbin),
         ('g1', 'f8', nbin),
         ('g1_err', 'f8', nbin),
         ('g2', 'f8', nbin),
@@ -337,8 +337,8 @@ def _get_means(sums, ind):
     w, = np.where(wsum > 0)
 
     if w.size > 0:
-        means['bin_field'][0, w] = (
-            sums['bin_field'][ind][:, w].sum(axis=0) / wsum[w]
+        means['binval'][0, w] = (
+            sums['binval'][ind][:, w].sum(axis=0) / wsum[w]
         )
         means['g1'][0, w] = sums['g1'][ind][:, w].sum(axis=0) / wsum[w]
         means['g2'][0, w] = sums['g2'][ind][:, w].sum(axis=0) / wsum[w]
@@ -371,8 +371,8 @@ def _do_bootstrap(sums, nrand, rng):
         ind = rng.choice(ntot, size=ntot)
         boot_means[i] = _get_corrected_means(sums, ind=ind)
 
-    means['bin_field_err'] = np.nanstd(
-        boot_means['bin_field'],
+    means['binval_err'] = np.nanstd(
+        boot_means['binval'],
         axis=0,
     )
     means['g1_err'] = np.nanstd(
@@ -473,7 +473,7 @@ def _read_all_means(fname):
     return allmeans
 
 
-def _doplot_g1g2_vs_bin_field(binval_name, means, outfront):
+def _doplot_g1g2_vs_binval(binval_name, means, outfront):
     import matplotlib.pyplot as mplt
 
     fig, ax = mplt.subplots(figsize=(10, 10 / 1.62))
@@ -485,13 +485,13 @@ def _doplot_g1g2_vs_bin_field(binval_name, means, outfront):
     )
 
     ax.errorbar(
-        means['bin_field'][0],
+        means['binval'][0],
         means['g1'][0],
         means['g1_err'][0],
         label=r'$g_1$',
     )
     ax.errorbar(
-        means['bin_field'][0],
+        means['binval'][0],
         means['g2'][0],
         means['g2_err'][0],
         label=r'$g_2$',
@@ -510,7 +510,7 @@ def _plotstats_main(fname, outfront):
     allmeans = _read_all_means(fname)
 
     for binval_name in allmeans:
-        _doplot_g1g2_vs_bin_field(
+        _doplot_g1g2_vs_binval(
             binval_name=binval_name,
             means=allmeans[binval_name],
             outfront=outfront,
