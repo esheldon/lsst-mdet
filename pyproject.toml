@@ -16,6 +16,7 @@ lsst-mdet-make-slurm = "lsst_mdet.cli.make_slurm:main"
 lsst-mdet-make-slurm-nersc = "lsst_mdet.cli.make_slurm_nersc:main"
 lsst-mdet-make-gaia = "lsst_mdet.cli.make_gaia:main"
 lsst-mdet-make-good-cells = "lsst_mdet.cli.make_good_cells:main"
+lsst-mdet-make-slurm-stats = "lsst_mdet.cli.make_slurm_stats:main"
 
 lsst-mdet-dosums = "lsst_mdet.cli.stats:dosums_cli"
 lsst-mdet-dostats = "lsst_mdet.cli.stats:dostats_cli"

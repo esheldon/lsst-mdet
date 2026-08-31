@@ -45,6 +45,13 @@ def basic_select(st):
 
     # skip large objects. 20 for exp, 4 for gauss (future ladder may
     # effectively use gauss?)
+    Tratio = np.zeros(st.size)
+    w, = np.where(st['psf_T'] > 0)
+    if w.size > 0:
+        Tratio[w] = st['T'][w] / st['psf_T'][w]
+
+    # these are arbitrary at this point
+    logic &= (Tratio < 20)
     logic &= (st['T'] < 20)
 
     # don't include very high PSF ellipticity
@@ -312,6 +319,11 @@ def _get_dostats_args():
     parser.add_argument('--flist', nargs='+', required=True)
     parser.add_argument('--seed', type=int, required=True)
     parser.add_argument('--nrand', type=int, required=True)
+    parser.add_argument('--nproc', type=int, default=1,
+                        help='processes for the bootstrap; the '
+                             'realizations are split over them, so '
+                             'the exact bootstrap errors depend on '
+                             'nproc for a given seed')
     parser.add_argument('--output', required=True)
     return parser.parse_args()
 
@@ -409,18 +421,43 @@ def _get_corrected_means(sums, ind):
     return means_ns
 
 
-def _do_bootstrap(sums, nrand, rng):
-    import numpy as np
-
+def _make_boot_means(sums, nrand, rng):
+    """
+    nrand bootstrap realizations of the corrected means
+    """
     ntot = sums['ns'].size
-    means = _get_corrected_means(sums, ind=np.arange(ntot))
-
     nbin = sums['ns']['wsum'].shape[1]
     boot_means = _get_mean_struct(n=nrand, nbin=nbin)
 
     for i in range(nrand):
         ind = rng.choice(ntot, size=ntot)
         boot_means[i] = _get_corrected_means(sums, ind=ind)
+
+    return boot_means
+
+
+# the sums shared with the fork-started bootstrap workers, set in
+# _do_all_bootstraps before the pool is created so the children
+# inherit them rather than receiving a pickled copy per task
+_BOOT_ALLSUMS = None
+
+
+def _boot_worker(task):
+    import numpy as np
+
+    key, seed, nrand = task
+    rng = np.random.RandomState(seed)
+    return key, _make_boot_means(_BOOT_ALLSUMS[key], nrand, rng)
+
+
+def _do_bootstrap(sums, nrand, rng, boot_means=None):
+    import numpy as np
+
+    ntot = sums['ns'].size
+    means = _get_corrected_means(sums, ind=np.arange(ntot))
+
+    if boot_means is None:
+        boot_means = _make_boot_means(sums, nrand, rng)
 
     means['binval_err'] = np.nanstd(
         boot_means['binval'],
@@ -442,14 +479,50 @@ def _do_bootstrap(sums, nrand, rng):
     return means
 
 
-def _do_all_bootstraps(allsums, nrand, rng):
-    allmeans = {}
+def _do_all_bootstraps(allsums, nrand, rng, nproc=1):
+    import numpy as np
 
-    for key in allsums:
+    if nproc <= 1:
+        return {
+            key: _do_bootstrap(
+                sums=allsums[key], nrand=nrand, rng=rng,
+            )
+            for key in allsums
+        }
+
+    import multiprocessing as mp
+
+    # split the realizations of every key over the workers; the
+    # sums reach the children by fork, see _BOOT_ALLSUMS
+    global _BOOT_ALLSUMS
+    _BOOT_ALLSUMS = allsums
+
+    keys = list(allsums)
+    ntask_per_key = max(1, nproc // len(keys))
+    tasks = []
+    for key in keys:
+        lo = 0
+        for i in range(ntask_per_key):
+            n = (nrand - lo) // (ntask_per_key - i)
+            if n > 0:
+                seed = int(rng.choice(2 ** 31))
+                tasks.append((key, seed, n))
+            lo += n
+
+    try:
+        with mp.get_context('fork').Pool(nproc) as pool:
+            results = pool.map(_boot_worker, tasks)
+    finally:
+        _BOOT_ALLSUMS = None
+
+    allmeans = {}
+    for key in keys:
+        boot_means = np.concatenate(
+            [b for k, b in results if k == key],
+        )
         allmeans[key] = _do_bootstrap(
-            sums=allsums[key],
-            nrand=nrand,
-            rng=rng,
+            sums=allsums[key], nrand=nrand, rng=rng,
+            boot_means=boot_means,
         )
 
     return allmeans
@@ -466,7 +539,7 @@ def _write_means_output(fname, allmeans):
             fits.write_table(binval_means, extname=binval_name)
 
 
-def _dostats_main(config_file, flist, nrand, seed, outfile):
+def _dostats_main(config_file, flist, nrand, seed, outfile, nproc=1):
     import yaml
     import numpy as np
 
@@ -481,6 +554,7 @@ def _dostats_main(config_file, flist, nrand, seed, outfile):
         allsums=allsums,
         nrand=nrand,
         rng=rng,
+        nproc=nproc,
     )
     _write_means_output(outfile, allmeans)
 
@@ -493,6 +567,7 @@ def dostats_cli():
         seed=args.seed,
         nrand=args.nrand,
         outfile=args.output,
+        nproc=args.nproc,
     )
 
 
