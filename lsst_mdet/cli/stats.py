@@ -22,8 +22,10 @@ def _get_dosums_args():
 def basic_select(st):
     import numpy as np
 
-    # only primary objects
-    logic = st['is_primary']
+    # only primary objects.  The copy matters: without it the
+    # in-place &= below writes the accumulated logic back into
+    # the caller's is_primary column
+    logic = st['is_primary'].copy()
 
     # objects that were successfully processed
     logic &= (st['flags'] == 0)
@@ -79,9 +81,221 @@ def galaxy_select(st):
     return st[w]
 
 
+def diagnostic_select(st):
+    """
+    the broad selection for the hist2d diagnostics: primary,
+    successfully processed, low mfrac.  Deliberately no g_flags
+    cut (it removes the negative T measurements, NONPOS_SIZE, so
+    half the stellar locus), and no color or size cuts
+    """
+    import numpy as np
+
+    logic = (
+        st['is_primary']
+        & (st['flags'] == 0)
+        & (st['mfrac'] < 0.1)
+    )
+    w, = np.where(logic)
+    return st[w]
+
+
 def get_weights(st):
     cov_trace = st['g1_err'] ** 2 + st['g2_err'] ** 2
     return 1.0 / (SN ** 2 + cov_trace)
+
+
+# config keys that are sections, not binning entries
+RESERVED_CONFIG_KEYS = ('select', 'hist2d')
+
+
+def get_bin_config(config):
+    """
+    the binning entries of the config, leaving out the reserved
+    select and hist2d sections
+    """
+    return {
+        key: config[key] for key in config
+        if key not in RESERVED_CONFIG_KEYS
+    }
+
+
+def get_named_value(st, name):
+    """
+    a column or a derived value by name: Tratio (T/psf_T),
+    T_times_T_err, T_div_T_err, gmag (|g|), else the column itself
+    """
+    import numpy as np
+
+    if name == 'Tratio':
+        return st['T'] / st['psf_T']
+    elif name == 'T_times_T_err':
+        return st['T'] * st['T_err']
+    elif name == 'T_div_T_err':
+        return st['T'] / st['T_err']
+    elif name == 'gmag':
+        return np.hypot(st['g1'], st['g2'])
+    return st[name]
+
+
+def config_select(st, config):
+    """
+    apply the optional select section of the config: named values
+    (see get_named_value) with optional minval and maxval, e.g.
+
+        select:
+          Tratio: {maxval: 5}
+          T_times_T_err: {maxval: 1}
+    """
+    import numpy as np
+
+    sel = config.get('select')
+    if sel is None:
+        return st
+
+    logic = np.ones(st.size, dtype=bool)
+    for name, lims in sel.items():
+        vals = get_named_value(st, name)
+        if 'minval' in lims:
+            logic &= vals >= lims['minval']
+        if 'maxval' in lims:
+            logic &= vals <= lims['maxval']
+
+    w, = np.where(logic)
+    return st[w]
+
+
+#
+# the optional hist2d section: 2d diagnostic histograms over the ns
+# step, accumulated in dosums, summed over chunks in dostats and
+# plotted by plotstats, e.g.
+#
+#     hist2d:
+#       Tratio_vs_s2n:
+#         x: {name: s2n, minval: 10, maxval: 2000, nbin: 200,
+#             use_log: true}
+#         y: {name: Tratio, minval: -1, maxval: 30, nbin: 200,
+#             use_symlog: true, linthresh: 0.3}
+#
+# an axis is linear by default, use_log for logarithmic binning
+# (positive values only), or use_symlog with linthresh for binning
+# uniform in sign(v) * log10(1 + |v|/linthresh): linear through
+# zero so negative values (stars scattering below T = 0) are kept,
+# logarithmic well above linthresh
+#
+
+def _symlog(v, linthresh):
+    import numpy as np
+    return np.sign(v) * np.log10(1.0 + np.abs(v) / linthresh)
+
+
+def _symlog_inv(t, linthresh):
+    import numpy as np
+    return np.sign(t) * linthresh * (10.0 ** np.abs(t) - 1.0)
+
+
+def _hist2d_axis_edges(aconfig):
+    """
+    the bin edges in true axis values: uniform for a linear axis,
+    uniform in log10 (returned as log10 values) for use_log, and
+    uniform in the symlog transform (returned as true values, so
+    non-uniform) for use_symlog
+    """
+    import numpy as np
+
+    if aconfig.get('use_log') and aconfig.get('use_symlog'):
+        raise ValueError('use_log and use_symlog are exclusive')
+
+    minval = aconfig['minval']
+    maxval = aconfig['maxval']
+    nbin = aconfig['nbin']
+
+    if aconfig.get('use_symlog'):
+        lt = aconfig['linthresh']
+        tedges = np.linspace(
+            _symlog(minval, lt), _symlog(maxval, lt), nbin + 1,
+        )
+        return _symlog_inv(tedges, lt)
+
+    if aconfig.get('use_log'):
+        minval = np.log10(minval)
+        maxval = np.log10(maxval)
+    return np.linspace(minval, maxval, nbin + 1)
+
+
+def _init_hist2d(config):
+    import numpy as np
+
+    h2 = config.get('hist2d')
+    if h2 is None:
+        return {}
+    return {
+        key: np.zeros(
+            (hconfig['x']['nbin'], hconfig['y']['nbin']),
+            dtype='i8',
+        )
+        for key, hconfig in h2.items()
+    }
+
+
+def _do_hist2d(allhist, st, config):
+    """
+    accumulate the diagnostic histograms from the ns rows
+    """
+    import numpy as np
+
+    h2 = config.get('hist2d')
+    if h2 is None:
+        return
+
+    wns, = np.where(st['mcal_step'] == 'ns')
+    stns = st[wns]
+
+    for key, hconfig in h2.items():
+        vals = {}
+        with np.errstate(divide='ignore', invalid='ignore'):
+            for axis in ('x', 'y'):
+                v = np.asarray(
+                    get_named_value(stns, hconfig[axis]['name']),
+                    dtype='f8',
+                )
+                # symlog and linear axes bin the raw values (the
+                # symlog edges are non-uniform true values)
+                if hconfig[axis].get('use_log'):
+                    v = np.log10(v)
+                vals[axis] = v
+
+        ok = np.isfinite(vals['x']) & np.isfinite(vals['y'])
+        counts, _, _ = np.histogram2d(
+            vals['x'][ok], vals['y'][ok],
+            bins=[_hist2d_axis_edges(hconfig['x']),
+                  _hist2d_axis_edges(hconfig['y'])],
+        )
+        allhist[key] += counts.astype('i8')
+
+
+def _write_hist2d(fits, allhist):
+    import numpy as np
+
+    for key, counts in allhist.items():
+        st = np.zeros(1, dtype=[('counts', 'i8', counts.shape)])
+        st['counts'][0] = counts
+        fits.write_table(st, extname=f'hist2d_{key}')
+
+
+def _read_and_sum_hist2d(flist, config):
+    import rustfits
+
+    allhist = _init_hist2d(config)
+    if not allhist:
+        return allhist
+
+    for fname in flist:
+        with rustfits.FITS(fname) as fits:
+            for key in allhist:
+                allhist[key] += (
+                    fits[f'hist2d_{key}'].read()['counts'][0]
+                )
+    return allhist
 
 
 def _do_sums_by_binval_name(
@@ -109,10 +323,7 @@ def _do_sums_by_binval_name(
         wtype, = np.where(st['mcal_step'] == mcal_step)
         sums = _get_sum_struct(bconfig['nbin'])
 
-        if binval_name == 'Tratio':
-            binval = st['T'][wtype] / st['psf_T'][wtype]
-        else:
-            binval = st[binval_name][wtype]
+        binval = get_named_value(st[wtype], binval_name)
 
         if bconfig['use_log']:
             binval = np.log10(binval)
@@ -244,7 +455,7 @@ def _read_flist(fname):
     return flist
 
 
-def _write_sums_output(fname, allsums, allstats):
+def _write_sums_output(fname, allsums, allstats, allhist):
     import numpy as np
     import rustfits
 
@@ -262,6 +473,8 @@ def _write_sums_output(fname, allsums, allstats):
                 sum_st = np.concatenate(mcal_step_sums)
                 fits.write_table(sum_st, extname=extname)
 
+        _write_hist2d(fits, allhist)
+
 
 def _dosums_main(config_file, flist_file, outfile):
     import rustfits
@@ -271,14 +484,18 @@ def _dosums_main(config_file, flist_file, outfile):
     with open(config_file) as fobj:
         config = yaml.safe_load(fobj)
 
+    bin_config = get_bin_config(config)
+
     flist = _read_flist(flist_file)
     # flist = flist[:100]
 
     allsums = {}
     allstats = {}
-    for key in config:
+    for key in bin_config:
         allsums[key] = {'ns': [], '1p': [], '1m': []}
         allstats[key] = _get_stat_struct()
+
+    allhist = _init_hist2d(config)
 
     for fname in tqdm(flist, ascii=True, ncols=70):
         if fname == '' or fname == '#':
@@ -288,15 +505,21 @@ def _dosums_main(config_file, flist_file, outfile):
 
         basic = basic_select(orig)
         gals = galaxy_select(basic)
+        gals = config_select(gals, config)
 
         _do_sums(
             allsums=allsums,
             allstats=allstats,
             st=gals,
-            config=config,
+            config=bin_config,
         )
+        # the diagnostic histograms are made from the broad
+        # diagnostic selection: no g_flags cut (negative T kept),
+        # no galaxy s2n/Tratio cuts, no config select cuts, so
+        # they show the population the cuts act on
+        _do_hist2d(allhist, diagnostic_select(orig), config)
 
-    _write_sums_output(outfile, allsums, allstats)
+    _write_sums_output(outfile, allsums, allstats, allhist)
 
 
 def dosums_cli():
@@ -528,7 +751,7 @@ def _do_all_bootstraps(allsums, nrand, rng, nproc=1):
     return allmeans
 
 
-def _write_means_output(fname, allmeans):
+def _write_means_output(fname, allmeans, allhist):
     import rustfits
 
     print('writing to:', fname)
@@ -537,6 +760,8 @@ def _write_means_output(fname, allmeans):
         for binval_name, binval_means in allmeans.items():
 
             fits.write_table(binval_means, extname=binval_name)
+
+        _write_hist2d(fits, allhist)
 
 
 def _dostats_main(config_file, flist, nrand, seed, outfile, nproc=1):
@@ -548,7 +773,10 @@ def _dostats_main(config_file, flist, nrand, seed, outfile, nproc=1):
     with open(config_file) as fobj:
         config = yaml.safe_load(fobj)
 
-    allsums, allstats = _read_all_sums(config=config, flist=flist)
+    bin_config = get_bin_config(config)
+
+    allsums, allstats = _read_all_sums(config=bin_config, flist=flist)
+    allhist = _read_and_sum_hist2d(flist=flist, config=config)
 
     allmeans = _do_all_bootstraps(
         allsums=allsums,
@@ -556,7 +784,7 @@ def _dostats_main(config_file, flist, nrand, seed, outfile, nproc=1):
         rng=rng,
         nproc=nproc,
     )
-    _write_means_output(outfile, allmeans)
+    _write_means_output(outfile, allmeans, allhist)
 
 
 def dostats_cli():
@@ -594,6 +822,8 @@ def _read_all_means(fname):
             if not hdu.has_data:
                 continue
             key = hdu.extname
+            if key.startswith('hist2d_'):
+                continue
             print(key)
             allmeans[key] = hdu.read()
 
@@ -663,7 +893,7 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
     ax.set(
         xlabel=xlabel,
         ylabel=r'$g$',
-        ylim=[-0.01, 0.01],
+        ylim=[-0.002, 0.002],
     )
 
     _add_scaled_hist(ax=ax, hist=means['hist'][0], bconfig=bconfig)
@@ -691,6 +921,47 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
     mplt.close(fig)
 
 
+def _doplot_hist2d(key, counts, hconfig, outfront):
+    import numpy as np
+    import matplotlib.pyplot as mplt
+    from matplotlib.colors import LogNorm
+
+    fig, ax = mplt.subplots(figsize=(8, 7))
+
+    xedges = _hist2d_axis_edges(hconfig['x'])
+    yedges = _hist2d_axis_edges(hconfig['y'])
+
+    # rows are y for pcolormesh; empty bins masked rather than
+    # drawn as the lowest color
+    masked = np.ma.masked_equal(counts.T, 0)
+    pc = ax.pcolormesh(
+        xedges, yedges, masked, norm=LogNorm(), cmap='inferno',
+    )
+    fig.colorbar(pc, ax=ax, label='count')
+
+    def axis_label(aconfig):
+        label = aconfig['name']
+        if aconfig.get('use_log'):
+            label = r'log$_{10}$(' + label + ')'
+        return label
+
+    # a symlog axis holds true values with non-uniform edges; the
+    # matplotlib symlog scale renders it linear through zero
+    for axis, setscale in (('x', ax.set_xscale), ('y', ax.set_yscale)):
+        if hconfig[axis].get('use_symlog'):
+            setscale('symlog', linthresh=hconfig[axis]['linthresh'])
+
+    ax.set(
+        xlabel=axis_label(hconfig['x']),
+        ylabel=axis_label(hconfig['y']),
+    )
+
+    outfile = outfront + f'hist2d-{key}.pdf'
+    print('writing:', outfile)
+    fig.savefig(outfile)
+    mplt.close(fig)
+
+
 def _plotstats_main(config_file, fname, outfront):
     import yaml
 
@@ -705,6 +976,15 @@ def _plotstats_main(config_file, fname, outfront):
             binval_name=binval_name,
             means=allmeans[binval_name],
             bconfig=config[binval_name],
+            outfront=outfront,
+        )
+
+    allhist = _read_and_sum_hist2d(flist=[fname], config=config)
+    for key, counts in allhist.items():
+        _doplot_hist2d(
+            key=key,
+            counts=counts,
+            hconfig=config['hist2d'][key],
             outfront=outfront,
         )
 
