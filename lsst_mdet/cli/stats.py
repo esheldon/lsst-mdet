@@ -65,14 +65,29 @@ def _do_sums_by_binval_name(
     stats = allstats[binval_name]
     bconfig = config[binval_name]
 
+    minval = bconfig['minval']
+    maxval = bconfig['maxval']
+
+    if bconfig['use_log']:
+        minval = np.log10(minval)
+        maxval = np.log10(maxval)
+
     for mcal_step, mcal_step_sums in sums_dict.items():
         wtype, = np.where(st['mcal_step'] == mcal_step)
         sums = _get_sum_struct(bconfig['nbin'])
 
+        if binval_name == 'Tratio':
+            binval = st['T'][wtype] / st['psf_T'][wtype]
+        else:
+            binval = st[binval_name][wtype]
+
+        if bconfig['use_log']:
+            binval = np.log10(binval)
+
         _do_sums_by_field(
-            binval=st[binval_name][wtype],
-            minval=bconfig['minval'],
-            maxval=bconfig['maxval'],
+            binval=binval,
+            minval=minval,
+            maxval=maxval,
             nbin=bconfig['nbin'],
             g1=st['g1'][wtype],
             g2=st['g2'][wtype],
@@ -312,6 +327,8 @@ def _get_mean_struct(n, nbin):
     import numpy as np
 
     dtype = [
+        ('hist', 'i8', nbin),
+        ('wsum', 'f8', nbin),
         ('binval', 'f8', nbin),
         ('binval_err', 'f8', nbin),
         ('g1', 'f8', nbin),
@@ -323,6 +340,10 @@ def _get_mean_struct(n, nbin):
     ]
     st = np.zeros(n, dtype=dtype)
     for n in st.dtype.names:
+
+        if n == 'hist':
+            continue
+
         st[n] = np.nan
 
     return st
@@ -333,7 +354,11 @@ def _get_means(sums, ind):
     nbin = sums['wsum'].shape[1]
     means = _get_mean_struct(n=1, nbin=nbin)
 
+    means['hist'][0] = sums['n'][ind].sum(axis=0)
+
     wsum = sums['wsum'][ind].sum(axis=0)
+    means['wsum'][0] = wsum
+
     w, = np.where(wsum > 0)
 
     if w.size > 0:
@@ -452,6 +477,7 @@ def dostats_cli():
 def _get_plotstats_args():
     import argparse
     parser = argparse.ArgumentParser()
+    parser.add_argument('--config', required=True)
     parser.add_argument('--fname', required=True)
     parser.add_argument('--outfront', required=True)
     return parser.parse_args()
@@ -473,27 +499,86 @@ def _read_all_means(fname):
     return allmeans
 
 
-def _doplot_g1g2_vs_binval(binval_name, means, outfront):
+HIST_PEAK_FRAC = 0.9
+
+
+def _add_scaled_hist(ax, hist, bconfig):
+    """
+    draw the bin counts as a filled gray histogram behind the
+    points, scaled to span the y range from the bottom to
+    HIST_PEAK_FRAC of the way up at the peak
+    """
+    import numpy as np
+
+    nbin = bconfig['nbin']
+    assert hist.size == nbin, f'hist has {hist.size} bins, config {nbin}'
+
+    hmax = hist.max()
+    if hmax <= 0:
+        return
+
+    minval = bconfig['minval']
+    maxval = bconfig['maxval']
+
+    if bconfig['use_log']:
+        minval = np.log10(minval)
+        maxval = np.log10(maxval)
+
+    edges = np.linspace(minval, maxval, nbin + 1)
+
+    ylo, yhi = ax.get_ylim()
+    scaled = ylo + HIST_PEAK_FRAC * (yhi - ylo) * hist / hmax
+
+    ax.stairs(
+        scaled,
+        edges,
+        baseline=ylo,
+        fill=True,
+        color='gray',
+        alpha=0.3,
+        zorder=0,
+    )
+
+
+def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
     import matplotlib.pyplot as mplt
 
     fig, ax = mplt.subplots(figsize=(10, 10 / 1.62))
 
+    if binval_name == 's2n':
+        xlabel = 'S/N'
+    elif binval_name == 'Tratio':
+        xlabel = r'T / T$_{\mathrm{PSF}}$'
+    elif binval_name == 'psfrec_g1':
+        xlabel = r'PSF $g_1$'
+    elif binval_name == 'psfrec_g2':
+        xlabel = r'PSF $g_2$'
+    else:
+        xlabel = binval_name
+
+    if bconfig['use_log']:
+        xlabel = r'log$_{10}$(' + xlabel + ')'
+
     ax.set(
-        xlabel=binval_name,
+        xlabel=xlabel,
         ylabel=r'$g$',
         ylim=[-0.01, 0.01],
     )
+
+    _add_scaled_hist(ax=ax, hist=means['hist'][0], bconfig=bconfig)
 
     ax.errorbar(
         means['binval'][0],
         means['g1'][0],
         means['g1_err'][0],
+        marker='o',
         label=r'$g_1$',
     )
     ax.errorbar(
         means['binval'][0],
         means['g2'][0],
         means['g2_err'][0],
+        marker='o',
         label=r'$g_2$',
     )
     ax.axhline(0, color='black')
@@ -505,7 +590,12 @@ def _doplot_g1g2_vs_binval(binval_name, means, outfront):
     mplt.close(fig)
 
 
-def _plotstats_main(fname, outfront):
+def _plotstats_main(config_file, fname, outfront):
+    import yaml
+
+    with open(config_file) as fobj:
+        config = yaml.safe_load(fobj)
+
     print('reading:', fname)
     allmeans = _read_all_means(fname)
 
@@ -513,10 +603,15 @@ def _plotstats_main(fname, outfront):
         _doplot_g1g2_vs_binval(
             binval_name=binval_name,
             means=allmeans[binval_name],
+            bconfig=config[binval_name],
             outfront=outfront,
         )
 
 
 def plotstats_cli():
     args = _get_plotstats_args()
-    _plotstats_main(fname=args.fname, outfront=args.outfront)
+    _plotstats_main(
+        config_file=args.config,
+        fname=args.fname,
+        outfront=args.outfront,
+    )
