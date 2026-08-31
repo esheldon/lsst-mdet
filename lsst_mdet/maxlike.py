@@ -93,6 +93,7 @@ def fit_ml(st, model, rng, mbobs):
 
     # for these single-object fitters the shape is usable iff the
     # fit succeeded, and no deblending is attempted
+    st['g_flags'] = res['flags']
     st['deblend_flags'] = NO_ATTEMPT
     st['group_size'] = 1
 

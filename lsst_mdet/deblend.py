@@ -6,6 +6,7 @@ from .defaults import (
     FLAG_DUPLICATE_EXTRA,
     FLAG_EXTRA_DET_OFF_SEG,
     FLAG_NOT_CONVERGED,
+    NO_ATTEMPT,
     ZERO_WEIGHTS,
 )
 
@@ -88,7 +89,7 @@ def fit_deblend(
     cat: array with fields
         One row per sxcat detection, followed by one row per
         extra detection (in extra_detections order); see
-        fitting.get_kdeblend_struct
+        structs.get_struct
     keep: bool array
         Which rows of sxcat were kept (all of them; the stamp
         cutting clips at edges rather than failing).  Length
@@ -350,9 +351,17 @@ def pack_deblend_object(st, obj_res, bands, jacobian):
     """
     flags and numiter set outside.  deblend_flags is the kdeblend
     flag word as is (see kdeblend.flags); it shares the NO_ATTEMPT
-    bit convention with the other flags columns
+    bit convention with the other flags columns.  g_flags is the
+    kdeblend e_flags word (ngmix bits, never NO_ATTEMPT): zero iff
+    the shape and its errors are usable.  A star has no shape by
+    construction, so its g columns are never attempted
     """
     st['deblend_flags'] = obj_res['deblend_flags']
+
+    if obj_res['type'] == 'star':
+        st['g_flags'] = NO_ATTEMPT
+    else:
+        st['g_flags'] = obj_res['e_flags']
 
     g1, g2, g1_err, g2_err = _e2g(
         e1=obj_res['e1'],

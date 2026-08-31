@@ -31,6 +31,12 @@ from ..psf import fit_and_set_psfrec
 from ..qa import write_star_residual_qa
 from ..wcs import calculate_positions
 
+# retries for opening the butler when the registry database refuses
+# the connection; see open_butler
+BUTLER_NTRIES = 8
+BUTLER_RETRY_SLEEP = 5.0
+BUTLER_RETRY_MAX_SLEEP = 120.0
+
 
 def get_parser(per_patch=True):
     """
@@ -220,9 +226,7 @@ def preload(
     import lsst.images  # noqa
     import lsst.images._cell_grid  # noqa
     import lsst.images._geom  # noqa
-    from lsst.daf.butler import Butler
-
-    with Butler(repo, collections=collections) as butler:
+    with open_butler(repo, collections=collections) as butler:
         butler.get('skyMap', skymap=SKYMAP_VERS)
         if tract is not None and patch is not None:
             data_id = {
@@ -236,6 +240,62 @@ def preload(
     # and both would be talking on the same socket
     del butler
     gc.collect()
+
+
+def open_butler(
+    repo, collections, ntries=BUTLER_NTRIES, base_sleep=BUTLER_RETRY_SLEEP,
+    max_sleep=BUTLER_RETRY_MAX_SLEEP,
+):
+    """
+    open the butler, retrying with an exponential backoff when the
+    registry database refuses the connection.  Opening the butler
+    connects to the registry, and when many patches on many nodes
+    start at once the DP2 pgbouncer can hit its client connection
+    limit, which shows up as an OperationalError ("no more
+    connections allowed").  That is transient: the loads on the
+    other nodes finish in about a minute, so waiting and trying
+    again succeeds.
+
+    The sleep before try n is uniform in [0, base_sleep * 2**(n-1)],
+    capped at max_sleep, so concurrent retries are spread out.  With
+    the defaults the total wait before giving up is at most about
+    seven minutes.  Only OperationalError is retried; anything else
+    is a real error
+
+    Parameters
+    ----------
+    repo, collections: str, list
+        the butler repo and collections
+    ntries: int
+        total number of attempts
+    base_sleep, max_sleep: float
+        the backoff parameters, seconds
+
+    Returns
+    -------
+    butler: the Butler, usable as a context manager that closes it
+    """
+    import random
+    import time
+    from lsst.daf.butler import Butler
+    from sqlalchemy.exc import OperationalError
+
+    for itry in range(1, ntries + 1):
+        try:
+            return Butler(repo, collections=collections)
+        except OperationalError as err:
+            if itry == ntries:
+                raise
+            sleep = random.uniform(
+                0, min(base_sleep * 2**(itry - 1), max_sleep),
+            )
+            # the DBAPI error (psycopg2) carries the server message;
+            # the sqlalchemy wrapper adds a doc link after it
+            message = str(getattr(err, 'orig', None) or err).strip()
+            message = message.splitlines()[-1]
+            print(f'butler open failed on try {itry}/{ntries}: '
+                  f'{message}; retrying in {sleep:.0f} s', flush=True)
+            time.sleep(sleep)
 
 
 def main(
@@ -295,21 +355,25 @@ def main(
             bands=bands,
         )
     else:
-        from lsst.daf.butler import Butler
-
         if redo_bg is None:
             # match the getimages default: the background is
             # redone unless explicitly disabled
             redo_bg = True
 
-        butler = Butler(repo, collections=collections)
-        (deep_coadds, wcs, starmask, star_table, apod,
-         tract_bounds, skyvars) = load_coadds_butler(
-            butler=butler, tract=tract, patch=patch,
-            bands=bands, redo_bg=redo_bg, starsub=starsub,
-            gaia_file=gaia_file, gsub=gsub,
-            apod_stars=apod_stars,
-        )
+        # the butler is only needed for the load; closing it right
+        # after releases its registry database connection, which is
+        # a shared and limited resource (the DP2 pgbouncer refuses
+        # connections at its max_client_conn), rather than holding
+        # it idle for the whole processing stage
+        with open_butler(repo, collections=collections) as butler:
+            (deep_coadds, wcs, starmask, star_table, apod,
+             tract_bounds, skyvars) = load_coadds_butler(
+                butler=butler, tract=tract, patch=patch,
+                bands=bands, redo_bg=redo_bg, starsub=starsub,
+                gaia_file=gaia_file, gsub=gsub,
+                apod_stars=apod_stars,
+            )
+        del butler
 
     # the load is the part that hits the butler and the file system;
     # reported separately so contention shows up in the logs
