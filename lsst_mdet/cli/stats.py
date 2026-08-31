@@ -22,13 +22,39 @@ def _get_dosums_args():
 def basic_select(st):
     import numpy as np
 
+    # only primary objects
+    logic = st['is_primary']
+
     # objects that were successfully processed
-    logic = (st['flags'] == 0)
+    logic &= (st['flags'] == 0)
 
     # objects with usable shapes.  Removes objects
     # that were DEBLENDED_AS_PSF and objects with bad
     # shape errors
     logic &= (st['g_flags'] == 0)
+
+    # mfrac is the gaussian weighted fraction of zero weight
+    # pixels
+    logic &= (st['mfrac'] < 0.1)
+
+    # sanity color checks
+    logic &= (st['rmi'] > -1.3)
+    logic &= (st['rmi'] < 1.3)
+    logic &= (st['imz'] > -1.3)
+    logic &= (st['imz'] < 1.3)
+
+    # skip large objects. 20 for exp, 4 for gauss (future ladder may
+    # effectively use gauss?)
+    logic &= (st['T'] < 20)
+
+    # don't include very high PSF ellipticity
+    logic &= (np.abs(st['psfrec_g1_r']) < 0.05)
+    logic &= (np.abs(st['psfrec_g1_i']) < 0.05)
+    logic &= (np.abs(st['psfrec_g1_z']) < 0.05)
+
+    logic &= (np.abs(st['psfrec_g2_r']) < 0.05)
+    logic &= (np.abs(st['psfrec_g2_i']) < 0.05)
+    logic &= (np.abs(st['psfrec_g2_z']) < 0.05)
 
     w, = np.where(logic)
 
