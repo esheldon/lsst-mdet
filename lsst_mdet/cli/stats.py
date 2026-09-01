@@ -1,9 +1,212 @@
 """
-get sums, stats for null tests etc.
+sums and stats for the shear null tests, driven by a yaml config
+
+    select:            # the selection stages, applied in order
+      basic:           # a usable measurement; also the hist2d sample
+        is_primary: {equal: true}
+        flags:      {equal: 0}
+        mfrac:      {maxval: 0.1}
+      shape:           # a usable shape
+        g_flags:    {equal: 0}
+        rmi:        {minval: -2, maxval: 3}
+        psfrec_gmax: {maxval: 0.05}
+      galaxy:          # the galaxy sample for the binned stats
+        s2n:        {minval: 10}
+        Tratio:     {minval: 0.5}
+    bins:              # the binned stats: g/R and R vs the value
+      s2n: {minval: 10, maxval: 350, nbin: 20, use_log: true}
+    hist2d:            # optional 2d diagnostics over the basic stage
+      Tratio_vs_s2n:
+        x: {name: s2n, minval: 5, maxval: 5000, nbin: 200, use_log: true}
+        y: {name: Tratio, minval: -0.6, maxval: 30, nbin: 200,
+            use_symlog: true, linthresh: 0.3}
+
+A selection entry names a column or a derived value (see
+get_named_value) with the tests minval, maxval (both inclusive),
+equal and absmax (|value| <= absmax); a stage is the AND of its
+entries, and a non-finite value fails every test.  All three stages
+must be present, {} for one with no cuts: there are no selection
+defaults in the code.  The binned stats use basic + shape + galaxy,
+the hist2d diagnostics basic only.  The config text is stored in
+the sums and stats files in a 'config' extension, see
+read_config_text
 """
 from numba import njit
 
 SN = 0.27
+
+# the selection stages, in order
+STAGES = ('basic', 'shape', 'galaxy')
+SELECT_TESTS = ('minval', 'maxval', 'equal', 'absmax')
+TOP_LEVEL_KEYS = ('select', 'bins', 'hist2d')
+DERIVED_VALUES = (
+    'Tratio', 'T_times_T_err', 'T_div_T_err', 'gmag', 'psfrec_gmax',
+)
+CONFIG_EXTNAME = 'config'
+
+
+class ConfigError(ValueError):
+    pass
+
+
+def load_config(fname):
+    """
+    read and check the config.  The text is kept as config['_text']
+    for the provenance extension of the outputs
+    """
+    import yaml
+
+    with open(fname) as fobj:
+        text = fobj.read()
+    config = yaml.safe_load(text)
+    validate_config(config, fname)
+    config['_text'] = text
+    return config
+
+
+def validate_config(config, fname='config'):
+    """
+    the structure: the three select stages, a non-empty bins
+    section, known test names and no unknown top level keys
+    """
+    if not isinstance(config, dict):
+        raise ConfigError(f'{fname}: not a mapping')
+
+    extra = set(config) - set(TOP_LEVEL_KEYS) - {'_text'}
+    if extra:
+        raise ConfigError(
+            f'{fname}: unknown top level keys {sorted(extra)}; the '
+            f'sections are {TOP_LEVEL_KEYS}, binned entries go '
+            'under bins'
+        )
+
+    sel = config.get('select')
+    if not isinstance(sel, dict) or any(s not in sel for s in STAGES):
+        raise ConfigError(
+            f'{fname}: select must have the stages {STAGES}; use '
+            '{} for a stage with no cuts'
+        )
+    for stage in STAGES:
+        entries = sel[stage] or {}
+        if not isinstance(entries, dict):
+            raise ConfigError(f'{fname}: select.{stage} is not a mapping')
+        for name, tests in entries.items():
+            if not isinstance(tests, dict) or len(tests) == 0:
+                raise ConfigError(
+                    f'{fname}: select.{stage}.{name} needs tests from '
+                    f'{SELECT_TESTS}'
+                )
+            bad = set(tests) - set(SELECT_TESTS)
+            if bad:
+                raise ConfigError(
+                    f'{fname}: select.{stage}.{name}: unknown tests '
+                    f'{sorted(bad)}; use {SELECT_TESTS}'
+                )
+        sel[stage] = entries
+
+    bins = config.get('bins')
+    if not isinstance(bins, dict) or len(bins) == 0:
+        raise ConfigError(f'{fname}: bins section missing or empty')
+
+
+def validate_config_columns(config, st):
+    """
+    check every value name in the config against a catalog (its
+    columns plus the derived names) before the run starts
+    """
+    names = set()
+    for stage in STAGES:
+        names |= set(config['select'][stage])
+    names |= set(config['bins'])
+    for hconfig in (config.get('hist2d') or {}).values():
+        names |= {hconfig['x']['name'], hconfig['y']['name']}
+
+    known = set(st.dtype.names) | set(DERIVED_VALUES)
+    bad = sorted(names - known)
+    if bad:
+        raise ConfigError(
+            f'unknown value names in the config: {bad}; columns and '
+            f'the derived values {DERIVED_VALUES} are allowed'
+        )
+
+
+def select_stage(st, config, stage):
+    """
+    apply one selection stage: the AND of its entries, each a
+    named value with minval/maxval (inclusive), equal or absmax
+    tests.  Non-finite values fail every test
+    """
+    import numpy as np
+
+    logic = np.ones(st.size, dtype=bool)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        for name, tests in config['select'][stage].items():
+            vals = np.asarray(get_named_value(st, name))
+            for test, lim in tests.items():
+                if test == 'minval':
+                    logic &= vals >= lim
+                elif test == 'maxval':
+                    logic &= vals <= lim
+                elif test == 'equal':
+                    logic &= vals == lim
+                elif test == 'absmax':
+                    logic &= np.abs(vals) <= lim
+
+    w, = np.where(logic)
+    return st[w]
+
+
+def apply_selection(st, config, stages=STAGES):
+    """
+    apply the selection stages in order; all three by default, the
+    sample of the binned stats
+    """
+    for stage in stages:
+        st = select_stage(st, config, stage)
+    return st
+
+
+def describe_selection(config):
+    """
+    one line per stage, for the log
+    """
+    lines = []
+    for stage in STAGES:
+        entries = config['select'][stage]
+        if len(entries) == 0:
+            lines.append(f'    {stage}: no cuts')
+            continue
+        parts = []
+        for name, tests in entries.items():
+            tstr = ' '.join(f'{t} {v}' for t, v in tests.items())
+            parts.append(f'{name} {tstr}')
+        lines.append(f'    {stage}: ' + '; '.join(parts))
+    return '\n'.join(lines)
+
+
+def _write_config(fits, config):
+    """
+    the config text as a one row table in the config extension
+    """
+    import numpy as np
+
+    text = config['_text'].encode()
+    st = np.zeros(1, dtype=[('config', f'S{max(len(text), 1)}')])
+    st['config'][0] = text
+    fits.write_table(st, extname=CONFIG_EXTNAME)
+
+
+def read_config_text(fname):
+    """
+    the config text stored in a sums or stats file
+    """
+    import rustfits
+
+    # raw bytes: the default read rejects non-ascii text, e.g. an
+    # accent in a comment
+    with rustfits.FITS(fname) as fits:
+        raw = fits[CONFIG_EXTNAME].read_column('config', as_bytes=True)
+    return bytes(raw[0]).decode('utf-8', errors='replace')
 
 #
 # dosums
@@ -19,127 +222,17 @@ def _get_dosums_args():
     return parser.parse_args()
 
 
-# the mfrac threshold of the basic selection; a config can override
-# it with a basic section, e.g. to study the shear vs mfrac
-#
-#     basic:
-#       max_mfrac: 1.0
-#
-MAX_MFRAC = 0.1
-
-
-def basic_select(st, max_mfrac=MAX_MFRAC):
-    import numpy as np
-
-    # only primary objects.  The copy matters: without it the
-    # in-place &= below writes the accumulated logic back into
-    # the caller's is_primary column
-    logic = st['is_primary'].copy()
-
-    # objects that were successfully processed
-    logic &= (st['flags'] == 0)
-
-    # objects with usable shapes.  Removes objects
-    # that were DEBLENDED_AS_PSF and objects with bad
-    # shape errors
-    logic &= (st['g_flags'] == 0)
-
-    # mfrac is the gaussian weighted fraction of zero weight
-    # pixels
-    logic &= (st['mfrac'] < max_mfrac)
-
-    # sanity color checks
-    logic &= (st['rmi'] > -2)
-    logic &= (st['rmi'] < 3)
-    logic &= (st['imz'] > -2)
-    logic &= (st['imz'] < 3)
-
-    # skip large objects. 20 for exp, 4 for gauss (future ladder may
-    # effectively use gauss?)
-    Tratio = np.zeros(st.size)
-    w, = np.where(st['psf_T'] > 0)
-    if w.size > 0:
-        Tratio[w] = st['T'][w] / st['psf_T'][w]
-
-    # these are arbitrary at this point
-    logic &= (Tratio < 20)
-    logic &= (st['T'] < 20)
-
-    # don't include very high PSF ellipticity
-    logic &= (np.abs(st['psfrec_g1_r']) < 0.05)
-    logic &= (np.abs(st['psfrec_g1_i']) < 0.05)
-    logic &= (np.abs(st['psfrec_g1_z']) < 0.05)
-
-    logic &= (np.abs(st['psfrec_g2_r']) < 0.05)
-    logic &= (np.abs(st['psfrec_g2_i']) < 0.05)
-    logic &= (np.abs(st['psfrec_g2_z']) < 0.05)
-
-    w, = np.where(logic)
-
-    return st[w]
-
-
-def galaxy_select(st):
-    import numpy as np
-
-    Tratio = st['T'] / st['psf_T']
-    logic = (st['s2n'] > 10) & (Tratio > 0.5)
-
-    w, = np.where(logic)
-
-    return st[w]
-
-
-def diagnostic_select(st):
-    """
-    the broad selection for the hist2d diagnostics: primary,
-    successfully processed, low mfrac.  Deliberately no g_flags
-    cut (it removes the negative T measurements, NONPOS_SIZE, so
-    half the stellar locus), and no color or size cuts
-    """
-    import numpy as np
-
-    logic = (
-        st['is_primary']
-        & (st['flags'] == 0)
-        & (st['mfrac'] < 0.1)
-    )
-    w, = np.where(logic)
-    return st[w]
-
-
 def get_weights(st):
     cov_trace = st['g1_err'] ** 2 + st['g2_err'] ** 2
     return 1.0 / (SN ** 2 + cov_trace)
 
 
-# config keys that are sections, not binning entries
-RESERVED_CONFIG_KEYS = ('basic', 'select', 'hist2d')
-
-
-def get_max_mfrac(config):
-    """
-    the basic selection mfrac threshold, from the optional basic
-    section of the config
-    """
-    return config.get('basic', {}).get('max_mfrac', MAX_MFRAC)
-
-
-def get_bin_config(config):
-    """
-    the binning entries of the config, leaving out the reserved
-    select and hist2d sections
-    """
-    return {
-        key: config[key] for key in config
-        if key not in RESERVED_CONFIG_KEYS
-    }
-
-
 def get_named_value(st, name):
     """
-    a column or a derived value by name: Tratio (T/psf_T),
-    T_times_T_err, T_div_T_err, gmag (|g|), else the column itself
+    a column or a derived value by name (DERIVED_VALUES): Tratio
+    (T/psf_T), T_times_T_err, T_div_T_err, gmag (|g|), psfrec_gmax
+    (the largest |psfrec g1|, |psfrec g2| over the bands), else the
+    column itself
     """
     import numpy as np
 
@@ -151,34 +244,13 @@ def get_named_value(st, name):
         return st['T'] / st['T_err']
     elif name == 'gmag':
         return np.hypot(st['g1'], st['g2'])
+    elif name == 'psfrec_gmax':
+        cols = [
+            c for c in st.dtype.names
+            if c.startswith('psfrec_g1_') or c.startswith('psfrec_g2_')
+        ]
+        return np.max([np.abs(st[c]) for c in cols], axis=0)
     return st[name]
-
-
-def config_select(st, config):
-    """
-    apply the optional select section of the config: named values
-    (see get_named_value) with optional minval and maxval, e.g.
-
-        select:
-          Tratio: {maxval: 5}
-          T_times_T_err: {maxval: 1}
-    """
-    import numpy as np
-
-    sel = config.get('select')
-    if sel is None:
-        return st
-
-    logic = np.ones(st.size, dtype=bool)
-    for name, lims in sel.items():
-        vals = get_named_value(st, name)
-        if 'minval' in lims:
-            logic &= vals >= lims['minval']
-        if 'maxval' in lims:
-            logic &= vals <= lims['maxval']
-
-    w, = np.where(logic)
-    return st[w]
 
 
 #
@@ -472,7 +544,7 @@ def _read_flist(fname):
     return flist
 
 
-def _write_sums_output(fname, allsums, allstats, allhist):
+def _write_sums_output(fname, allsums, allstats, allhist, config):
     import numpy as np
     import rustfits
 
@@ -491,55 +563,50 @@ def _write_sums_output(fname, allsums, allstats, allhist):
                 fits.write_table(sum_st, extname=extname)
 
         _write_hist2d(fits, allhist)
+        _write_config(fits, config)
 
 
 def _dosums_main(config_file, flist_file, outfile):
     import rustfits
     from tqdm import tqdm
-    import yaml
 
-    with open(config_file) as fobj:
-        config = yaml.safe_load(fobj)
-
-    bin_config = get_bin_config(config)
-    max_mfrac = get_max_mfrac(config)
-    if max_mfrac != MAX_MFRAC:
-        print(f'basic selection mfrac < {max_mfrac} from the config')
+    config = load_config(config_file)
+    print('selection:')
+    print(describe_selection(config))
 
     flist = _read_flist(flist_file)
-    # flist = flist[:100]
+    flist = [f for f in flist if f != '' and not f.startswith('#')]
+    if len(flist) == 0:
+        raise ValueError(f'no files in {flist_file}')
 
     allsums = {}
     allstats = {}
-    for key in bin_config:
+    for key in config['bins']:
         allsums[key] = {'ns': [], '1p': [], '1m': []}
         allstats[key] = _get_stat_struct()
 
     allhist = _init_hist2d(config)
 
-    for fname in tqdm(flist, ascii=True, ncols=70):
-        if fname == '' or fname == '#':
-            continue
-
+    for i, fname in enumerate(tqdm(flist, ascii=True, ncols=70)):
         orig = rustfits.read(fname)
+        if i == 0:
+            validate_config_columns(config, orig)
 
-        basic = basic_select(orig, max_mfrac=max_mfrac)
-        gals = galaxy_select(basic)
-        gals = config_select(gals, config)
+        gals = apply_selection(orig, config)
 
         _do_sums(
             allsums=allsums,
             allstats=allstats,
             st=gals,
-            config=bin_config,
+            config=config['bins'],
         )
-        # the diagnostic histograms are made from the broad
-        # diagnostic selection: no g_flags cut (negative T kept),
-        # no galaxy s2n/Tratio cuts, no config select cuts, so
-        # they show the population the cuts act on
-        _do_hist2d(allhist, diagnostic_select(orig), config)
+        # the diagnostic histograms come from the basic stage only:
+        # no shape cuts (g_flags would drop the negative T stars)
+        # and no galaxy cuts, so they show the population the
+        # later cuts act on
+        _do_hist2d(allhist, select_stage(orig, config, 'basic'), config)
 
-    _write_sums_output(outfile, allsums, allstats, allhist)
+    _write_sums_output(outfile, allsums, allstats, allhist, config)
 
 
 def dosums_cli():
@@ -771,7 +838,7 @@ def _do_all_bootstraps(allsums, nrand, rng, nproc=1):
     return allmeans
 
 
-def _write_means_output(fname, allmeans, allhist):
+def _write_means_output(fname, allmeans, allhist, config):
     import rustfits
 
     print('writing to:', fname)
@@ -782,20 +849,17 @@ def _write_means_output(fname, allmeans, allhist):
             fits.write_table(binval_means, extname=binval_name)
 
         _write_hist2d(fits, allhist)
+        _write_config(fits, config)
 
 
 def _dostats_main(config_file, flist, nrand, seed, outfile, nproc=1):
-    import yaml
     import numpy as np
 
     rng = np.random.RandomState(seed)
 
-    with open(config_file) as fobj:
-        config = yaml.safe_load(fobj)
+    config = load_config(config_file)
 
-    bin_config = get_bin_config(config)
-
-    allsums, allstats = _read_all_sums(config=bin_config, flist=flist)
+    allsums, allstats = _read_all_sums(config=config['bins'], flist=flist)
     allhist = _read_and_sum_hist2d(flist=flist, config=config)
 
     allmeans = _do_all_bootstraps(
@@ -804,7 +868,7 @@ def _dostats_main(config_file, flist, nrand, seed, outfile, nproc=1):
         rng=rng,
         nproc=nproc,
     )
-    _write_means_output(outfile, allmeans, allhist)
+    _write_means_output(outfile, allmeans, allhist, config)
 
 
 def dostats_cli():
@@ -842,7 +906,7 @@ def _read_all_means(fname):
             if not hdu.has_data:
                 continue
             key = hdu.extname
-            if key.startswith('hist2d_'):
+            if key.startswith('hist2d_') or key == CONFIG_EXTNAME:
                 continue
             print(key)
             allmeans[key] = hdu.read()
@@ -1022,15 +1086,13 @@ def _doplot_hist2d(key, counts, hconfig, outfront):
 
 
 def _plotstats_main(config_file, fname, outfront):
-    import yaml
     import matplotlib
 
     # files only: never let matplotlib probe for a display, which
     # is slow (minutes) on a login node with X forwarding
     matplotlib.use('Agg')
 
-    with open(config_file) as fobj:
-        config = yaml.safe_load(fobj)
+    config = load_config(config_file)
 
     print('reading:', fname)
     allmeans = _read_all_means(fname)
@@ -1039,13 +1101,13 @@ def _plotstats_main(config_file, fname, outfront):
         _doplot_g1g2_vs_binval(
             binval_name=binval_name,
             means=allmeans[binval_name],
-            bconfig=config[binval_name],
+            bconfig=config['bins'][binval_name],
             outfront=outfront,
         )
         _doplot_R_vs_binval(
             binval_name=binval_name,
             means=allmeans[binval_name],
-            bconfig=config[binval_name],
+            bconfig=config['bins'][binval_name],
             outfront=outfront,
         )
 
