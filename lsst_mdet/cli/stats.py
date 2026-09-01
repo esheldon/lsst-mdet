@@ -24,7 +24,16 @@ sums and stats for the shear null tests, driven by a yaml config
 A selection entry names a column or a derived value (see
 get_named_value) with the tests minval, maxval (both inclusive),
 equal and absmax (|value| <= absmax); a stage is the AND of its
-entries, and a non-finite value fails every test.  All three stages
+entries, and a non-finite value fails every test.  A stage may also
+carry an exclude list, each item a set of entries whose tests all
+passing drops the object, e.g. to leave out a sky region
+
+      galaxy:
+        s2n: {minval: 10}
+        exclude:
+          - {ra: {minval: 288}, dec: {minval: -8}}
+
+All three stages
 must be present, {} for one with no cuts: there are no selection
 defaults in the code.  The binned stats use basic + shape + galaxy,
 the hist2d diagnostics basic only.  The config text is stored in
@@ -38,6 +47,7 @@ SN = 0.27
 # the selection stages, in order
 STAGES = ('basic', 'shape', 'galaxy')
 SELECT_TESTS = ('minval', 'maxval', 'equal', 'absmax')
+EXCLUDE_KEY = 'exclude'
 TOP_LEVEL_KEYS = ('select', 'bins', 'hist2d')
 DERIVED_VALUES = (
     'Tratio', 'T_times_T_err', 'T_div_T_err', 'gmag', 'psfrec_gmax',
@@ -87,22 +97,40 @@ def validate_config(config, fname='config'):
             f'{fname}: select must have the stages {STAGES}; use '
             '{} for a stage with no cuts'
         )
-    for stage in STAGES:
-        entries = sel[stage] or {}
+
+    def check_entries(entries, where):
         if not isinstance(entries, dict):
-            raise ConfigError(f'{fname}: select.{stage} is not a mapping')
+            raise ConfigError(f'{fname}: {where} is not a mapping')
         for name, tests in entries.items():
             if not isinstance(tests, dict) or len(tests) == 0:
                 raise ConfigError(
-                    f'{fname}: select.{stage}.{name} needs tests from '
+                    f'{fname}: {where}.{name} needs tests from '
                     f'{SELECT_TESTS}'
                 )
             bad = set(tests) - set(SELECT_TESTS)
             if bad:
                 raise ConfigError(
-                    f'{fname}: select.{stage}.{name}: unknown tests '
+                    f'{fname}: {where}.{name}: unknown tests '
                     f'{sorted(bad)}; use {SELECT_TESTS}'
                 )
+
+    for stage in STAGES:
+        entries = sel[stage] or {}
+        if not isinstance(entries, dict):
+            raise ConfigError(f'{fname}: select.{stage} is not a mapping')
+        # the exclude list: each item is a set of tests that, all
+        # passing, drops the object (a region to leave out, say)
+        exclude = entries.get(EXCLUDE_KEY, [])
+        if not isinstance(exclude, list):
+            raise ConfigError(
+                f'{fname}: select.{stage}.{EXCLUDE_KEY} must be a list'
+            )
+        for i, item in enumerate(exclude):
+            check_entries(item, f'select.{stage}.{EXCLUDE_KEY}[{i}]')
+        check_entries(
+            {k: v for k, v in entries.items() if k != EXCLUDE_KEY},
+            f'select.{stage}',
+        )
         sel[stage] = entries
 
     bins = config.get('bins')
@@ -117,7 +145,10 @@ def validate_config_columns(config, st):
     """
     names = set()
     for stage in STAGES:
-        names |= set(config['select'][stage])
+        entries = config['select'][stage]
+        names |= set(entries) - {EXCLUDE_KEY}
+        for item in entries.get(EXCLUDE_KEY, []):
+            names |= set(item)
     names |= set(config['bins'])
     for hconfig in (config.get('hist2d') or {}).values():
         names |= {hconfig['x']['name'], hconfig['y']['name']}
@@ -131,17 +162,15 @@ def validate_config_columns(config, st):
         )
 
 
-def select_stage(st, config, stage):
+def _tests_mask(st, entries):
     """
-    apply one selection stage: the AND of its entries, each a
-    named value with minval/maxval (inclusive), equal or absmax
-    tests.  Non-finite values fail every test
+    the AND of the tests of a set of entries (name -> tests)
     """
     import numpy as np
 
     logic = np.ones(st.size, dtype=bool)
     with np.errstate(divide='ignore', invalid='ignore'):
-        for name, tests in config['select'][stage].items():
+        for name, tests in entries.items():
             vals = np.asarray(get_named_value(st, name))
             for test, lim in tests.items():
                 if test == 'minval':
@@ -152,6 +181,24 @@ def select_stage(st, config, stage):
                     logic &= vals == lim
                 elif test == 'absmax':
                     logic &= np.abs(vals) <= lim
+    return logic
+
+
+def select_stage(st, config, stage):
+    """
+    apply one selection stage: the AND of its entries, each a
+    named value with minval/maxval (inclusive), equal or absmax
+    tests, minus the objects matching any item of its exclude
+    list.  Non-finite values fail every test
+    """
+    import numpy as np
+
+    entries = config['select'][stage]
+    logic = _tests_mask(
+        st, {k: v for k, v in entries.items() if k != EXCLUDE_KEY},
+    )
+    for item in entries.get(EXCLUDE_KEY, []):
+        logic &= ~_tests_mask(st, item)
 
     w, = np.where(logic)
     return st[w]
@@ -177,11 +224,17 @@ def describe_selection(config):
         if len(entries) == 0:
             lines.append(f'    {stage}: no cuts')
             continue
-        parts = []
-        for name, tests in entries.items():
-            tstr = ' '.join(f'{t} {v}' for t, v in tests.items())
-            parts.append(f'{name} {tstr}')
-        lines.append(f'    {stage}: ' + '; '.join(parts))
+
+        def fmt(ent):
+            return '; '.join(
+                f'{name} ' + ' '.join(f'{t} {v}' for t, v in tests.items())
+                for name, tests in ent.items()
+            )
+
+        parts = fmt({k: v for k, v in entries.items() if k != EXCLUDE_KEY})
+        lines.append(f'    {stage}: {parts}')
+        for item in entries.get(EXCLUDE_KEY, []):
+            lines.append(f'        excluding: {fmt(item)}')
     return '\n'.join(lines)
 
 
