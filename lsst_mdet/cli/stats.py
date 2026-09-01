@@ -41,6 +41,7 @@ SELECT_TESTS = ('minval', 'maxval', 'equal', 'absmax')
 TOP_LEVEL_KEYS = ('select', 'bins', 'hist2d')
 DERIVED_VALUES = (
     'Tratio', 'T_times_T_err', 'T_div_T_err', 'gmag', 'psfrec_gmax',
+    'cell_edge_dist',
 )
 CONFIG_EXTNAME = 'config'
 
@@ -231,12 +232,21 @@ def get_named_value(st, name):
     """
     a column or a derived value by name (DERIVED_VALUES): Tratio
     (T/psf_T), T_times_T_err, T_div_T_err, gmag (|g|), psfrec_gmax
-    (the largest |psfrec g1|, |psfrec g2| over the bands), else the
+    (the largest |psfrec g1|, |psfrec g2| over the bands),
+    cell_edge_dist (pixels from the primary region boundary of the
+    cell, positive inside, negative in the overlap band), else the
     column itself
     """
     import numpy as np
 
-    if name == 'Tratio':
+    if name == 'cell_edge_dist':
+        from ..defaults import CELL_OVERLAP_HIGH, CELL_OVERLAP_LOW
+        x, y = st['xcell'], st['ycell']
+        return np.min([
+            x - CELL_OVERLAP_LOW, CELL_OVERLAP_HIGH - x,
+            y - CELL_OVERLAP_LOW, CELL_OVERLAP_HIGH - y,
+        ], axis=0)
+    elif name == 'Tratio':
         return st['T'] / st['psf_T']
     elif name == 'T_times_T_err':
         return st['T'] * st['T_err']
