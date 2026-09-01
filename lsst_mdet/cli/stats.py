@@ -19,7 +19,16 @@ def _get_dosums_args():
     return parser.parse_args()
 
 
-def basic_select(st):
+# the mfrac threshold of the basic selection; a config can override
+# it with a basic section, e.g. to study the shear vs mfrac
+#
+#     basic:
+#       max_mfrac: 1.0
+#
+MAX_MFRAC = 0.1
+
+
+def basic_select(st, max_mfrac=MAX_MFRAC):
     import numpy as np
 
     # only primary objects.  The copy matters: without it the
@@ -37,7 +46,7 @@ def basic_select(st):
 
     # mfrac is the gaussian weighted fraction of zero weight
     # pixels
-    logic &= (st['mfrac'] < 0.1)
+    logic &= (st['mfrac'] < max_mfrac)
 
     # sanity color checks
     logic &= (st['rmi'] > -2)
@@ -105,7 +114,15 @@ def get_weights(st):
 
 
 # config keys that are sections, not binning entries
-RESERVED_CONFIG_KEYS = ('select', 'hist2d')
+RESERVED_CONFIG_KEYS = ('basic', 'select', 'hist2d')
+
+
+def get_max_mfrac(config):
+    """
+    the basic selection mfrac threshold, from the optional basic
+    section of the config
+    """
+    return config.get('basic', {}).get('max_mfrac', MAX_MFRAC)
 
 
 def get_bin_config(config):
@@ -485,6 +502,9 @@ def _dosums_main(config_file, flist_file, outfile):
         config = yaml.safe_load(fobj)
 
     bin_config = get_bin_config(config)
+    max_mfrac = get_max_mfrac(config)
+    if max_mfrac != MAX_MFRAC:
+        print(f'basic selection mfrac < {max_mfrac} from the config')
 
     flist = _read_flist(flist_file)
     # flist = flist[:100]
@@ -503,7 +523,7 @@ def _dosums_main(config_file, flist_file, outfile):
 
         orig = rustfits.read(fname)
 
-        basic = basic_select(orig)
+        basic = basic_select(orig, max_mfrac=max_mfrac)
         gals = galaxy_select(basic)
         gals = config_select(gals, config)
 
@@ -871,11 +891,7 @@ def _add_scaled_hist(ax, hist, bconfig):
     )
 
 
-def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
-    import matplotlib.pyplot as mplt
-
-    fig, ax = mplt.subplots(figsize=(10, 10 / 1.62))
-
+def _get_xlabel(binval_name, bconfig):
     if binval_name == 's2n':
         xlabel = 'S/N'
     elif binval_name == 'Tratio':
@@ -890,9 +906,20 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
     if bconfig['use_log']:
         xlabel = r'log$_{10}$(' + xlabel + ')'
 
+    return xlabel
+
+
+def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
+    """
+    the response corrected mean shear g/R in bins of the value
+    """
+    import matplotlib.pyplot as mplt
+
+    fig, ax = mplt.subplots(figsize=(10, 10 / 1.62))
+
     ax.set(
-        xlabel=xlabel,
-        ylabel=r'$g$',
+        xlabel=_get_xlabel(binval_name, bconfig),
+        ylabel=r'$g / R$',
         ylim=[-0.002, 0.002],
     )
 
@@ -903,19 +930,49 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
         means['g1'][0],
         means['g1_err'][0],
         marker='o',
-        label=r'$g_1$',
+        label=r'$g_1 / R$',
     )
     ax.errorbar(
         means['binval'][0],
         means['g2'][0],
         means['g2_err'][0],
         marker='o',
-        label=r'$g_2$',
+        label=r'$g_2 / R$',
     )
     ax.axhline(0, color='black')
     ax.legend()
 
     outfile = outfront + f'{binval_name}.pdf'
+    print('writing:', outfile)
+    fig.savefig(outfile)
+    mplt.close(fig)
+
+
+def _doplot_R_vs_binval(binval_name, means, bconfig, outfront):
+    """
+    the response R = R11 in bins of the value, with its bootstrap
+    error
+    """
+    import matplotlib.pyplot as mplt
+
+    fig, ax = mplt.subplots(figsize=(10, 10 / 1.62))
+
+    ax.set(
+        xlabel=_get_xlabel(binval_name, bconfig),
+        ylabel=r'$R$',
+    )
+
+    ax.errorbar(
+        means['binval'][0],
+        means['R'][0],
+        means['R_err'][0],
+        marker='o',
+        color='black',
+    )
+    # after the points, so the histogram scales to their y range
+    _add_scaled_hist(ax=ax, hist=means['hist'][0], bconfig=bconfig)
+
+    outfile = outfront + f'R-{binval_name}.pdf'
     print('writing:', outfile)
     fig.savefig(outfile)
     mplt.close(fig)
@@ -932,10 +989,12 @@ def _doplot_hist2d(key, counts, hconfig, outfront):
     yedges = _hist2d_axis_edges(hconfig['y'])
 
     # rows are y for pcolormesh; empty bins masked rather than
-    # drawn as the lowest color
+    # drawn as the lowest color.  Rasterized: as vector art the
+    # nbin^2 rectangles make a slow, megabyte pdf
     masked = np.ma.masked_equal(counts.T, 0)
     pc = ax.pcolormesh(
         xedges, yedges, masked, norm=LogNorm(), cmap='inferno',
+        rasterized=True,
     )
     fig.colorbar(pc, ax=ax, label='count')
 
@@ -964,6 +1023,11 @@ def _doplot_hist2d(key, counts, hconfig, outfront):
 
 def _plotstats_main(config_file, fname, outfront):
     import yaml
+    import matplotlib
+
+    # files only: never let matplotlib probe for a display, which
+    # is slow (minutes) on a login node with X forwarding
+    matplotlib.use('Agg')
 
     with open(config_file) as fobj:
         config = yaml.safe_load(fobj)
@@ -973,6 +1037,12 @@ def _plotstats_main(config_file, fname, outfront):
 
     for binval_name in allmeans:
         _doplot_g1g2_vs_binval(
+            binval_name=binval_name,
+            means=allmeans[binval_name],
+            bconfig=config[binval_name],
+            outfront=outfront,
+        )
+        _doplot_R_vs_binval(
             binval_name=binval_name,
             means=allmeans[binval_name],
             bconfig=config[binval_name],

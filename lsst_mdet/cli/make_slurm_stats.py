@@ -18,6 +18,11 @@ run directory; submit from there:
     stats/stats-mdet.slurm    the slurm script; debug QOS default
 
     cd <run-dir> && sbatch stats/stats-mdet.slurm
+
+A variant run (another config, e.g. different cuts) gets --tag and
+--config: the script, slurm, log, sums directory and stats file
+then carry -<tag>, e.g. stats/stats-<tag>.fits, beside the default
+run.  The flist chunks are shared
 """
 import glob
 import os
@@ -46,7 +51,10 @@ nproc=$1
 export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-mkdir -p stats/sums
+config=%(config)s
+sums_dir=%(sums_dir)s
+
+mkdir -p ${sums_dir}
 
 # one dosums per chunk, all at once (the chunk count is the nproc
 # the maker was given)
@@ -54,10 +62,10 @@ for chunk in stats/flists/flist-*.txt; do
     num=$(basename ${chunk} .txt)
     num=${num#flist-}
     lsst-mdet-dosums \
-        --config stats/sums_config.yaml \
+        --config ${config} \
         --flist ${chunk} \
-        --output stats/sums/sums-${num}.fits \
-        > stats/sums/sums-${num}.log 2>&1 &
+        --output ${sums_dir}/sums-${num}.fits \
+        > ${sums_dir}/sums-${num}.log 2>&1 &
 done
 wait
 
@@ -66,8 +74,8 @@ fail=0
 for chunk in stats/flists/flist-*.txt; do
     num=$(basename ${chunk} .txt)
     num=${num#flist-}
-    if [ ! -e stats/sums/sums-${num}.fits ]; then
-        echo "FAILED chunk ${num}: see stats/sums/sums-${num}.log"
+    if [ ! -e ${sums_dir}/sums-${num}.fits ]; then
+        echo "FAILED chunk ${num}: see ${sums_dir}/sums-${num}.log"
         fail=1
     fi
 done
@@ -76,17 +84,17 @@ if [ ${fail} -ne 0 ]; then
 fi
 
 lsst-mdet-dostats \
-    --config stats/sums_config.yaml \
-    --flist stats/sums/sums-*.fits \
+    --config ${config} \
+    --flist ${sums_dir}/sums-*.fits \
     --seed %(stats_seed)d \
     --nrand %(nrand)d \
     --nproc ${nproc} \
-    --output stats/stats.fits
+    --output %(stats_file)s
 """
 
 SLURM_TEMPLATE = r'''#!/bin/bash
-#SBATCH --job-name=stats-mdet
-#SBATCH --output stats/stats-mdet.log
+#SBATCH --job-name=%(job_name)s
+#SBATCH --output %(logfile)s
 
 #SBATCH --account=%(account)s
 #SBATCH --qos=%(qos)s
@@ -97,8 +105,27 @@ SLURM_TEMPLATE = r'''#!/bin/bash
 
 #SBATCH --time=%(time)s
 
-./stats/run-stats.sh %(nproc)d
+./%(script)s %(nproc)d
 '''
+
+
+def get_names(tag, config=None):
+    """
+    the file names of a stats run, relative to the run directory:
+    the defaults, or with -<tag> appended for a variant run so it
+    lives beside the default one
+    """
+    suffix = '' if tag is None else f'-{tag}'
+    return {
+        'config': (config if config is not None
+                   else 'stats/sums_config.yaml'),
+        'script': f'stats/run-stats{suffix}.sh',
+        'slurm': f'stats/stats-mdet{suffix}.slurm',
+        'logfile': f'stats/stats-mdet{suffix}.log',
+        'sums_dir': f'stats/sums{suffix}',
+        'stats_file': f'stats/stats{suffix}.fits',
+        'job_name': f'stats-mdet{suffix}',
+    }
 
 
 def get_flist(run_dir):
@@ -150,7 +177,9 @@ def go(args):
     rng = np.random.RandomState(args.seed)
 
     stats_dir = os.path.join(args.run_dir, 'stats')
-    config = os.path.join(stats_dir, 'sums_config.yaml')
+    names = get_names(args.tag, args.config)
+
+    config = os.path.join(args.run_dir, names['config'])
     if not os.path.exists(config):
         raise RuntimeError(f'no config found: {config}')
 
@@ -160,19 +189,25 @@ def go(args):
 
     write_flists(stats_dir, flist, args.nproc)
 
-    script = os.path.join(stats_dir, 'run-stats.sh')
+    script = os.path.join(args.run_dir, names['script'])
     print('writing:', script)
     with open(script, 'w') as fobj:
         fobj.write(SCRIPT % {
+            'config': names['config'],
+            'sums_dir': names['sums_dir'],
+            'stats_file': names['stats_file'],
             'stats_seed': rng.choice(MAX_SEED),
             'nrand': args.nrand,
         })
     os.chmod(script, 0o755)
 
-    slurm_file = os.path.join(stats_dir, 'stats-mdet.slurm')
+    slurm_file = os.path.join(args.run_dir, names['slurm'])
     print('writing:', slurm_file)
     with open(slurm_file, 'w') as fobj:
         fobj.write(SLURM_TEMPLATE % {
+            'job_name': names['job_name'],
+            'logfile': names['logfile'],
+            'script': names['script'],
             'account': args.account,
             'qos': args.qos,
             'constraint': args.constraint,
@@ -180,8 +215,7 @@ def go(args):
             'nproc': args.nproc,
         })
 
-    print(f'submit from {args.run_dir or "."}: '
-          f'sbatch stats/stats-mdet.slurm')
+    print(f'submit from {args.run_dir or "."}: sbatch {names["slurm"]}')
 
 
 def get_args():
@@ -197,6 +231,14 @@ def get_args():
                              'subdirectory')
     parser.add_argument('--seed', type=int, required=True,
                         help='seed for the dostats bootstrap seed')
+    parser.add_argument('--tag',
+                        help='name a variant run: -<tag> is appended '
+                             'to the script, slurm, log, sums '
+                             'directory and stats file names so it '
+                             'lives beside the default run')
+    parser.add_argument('--config',
+                        help='config file relative to the run '
+                             'directory; default stats/sums_config.yaml')
     parser.add_argument('--nproc', type=int, default=DEFAULT_NPROC,
                         help='dosums processes to run at once, and '
                              'the flist chunk count and the dostats '
