@@ -40,10 +40,10 @@ def basic_select(st):
     logic &= (st['mfrac'] < 0.1)
 
     # sanity color checks
-    logic &= (st['rmi'] > -1.3)
-    logic &= (st['rmi'] < 1.3)
-    logic &= (st['imz'] > -1.3)
-    logic &= (st['imz'] < 1.3)
+    logic &= (st['rmi'] > -2)
+    logic &= (st['rmi'] < 3)
+    logic &= (st['imz'] > -2)
+    logic &= (st['imz'] < 3)
 
     # skip large objects. 20 for exp, 4 for gauss (future ladder may
     # effectively use gauss?)
