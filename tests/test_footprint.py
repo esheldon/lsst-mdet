@@ -3,6 +3,8 @@ the keep-footprint machinery: tract bounds and primary cut
 (including RA wrap), cell polygons (including index order),
 star-circle clearing, and the tract trim
 """
+import os
+
 import numpy as np
 import pytest
 
@@ -18,6 +20,8 @@ from lsst_mdet.defaults import (
 from lsst_mdet.hmaps import (
     NSIDE,
     NSIDE_COVERAGE,
+    cat_footprints,
+    get_footprint_flist,
     make_empty_footprint,
     mask_stars_in_footprint,
     trim_footprint_to_tract_bounds,
@@ -243,6 +247,81 @@ def test_circle_radius():
     assert circle_radius(0.0) == MASK_RMAX
     r = circle_radius(np.array([15.0, 25.0, 0.0]))
     assert r == pytest.approx([MASK_R15, MINRAD, MASK_RMAX])
+
+
+def make_block_footprint(blocks):
+    """
+    a footprint with pixel ranges [lo, hi) set inside the given
+    coverage pixels: {cov_pixel: (lo, hi)}
+    """
+    nfine = (NSIDE // NSIDE_COVERAGE) ** 2
+    fp = make_empty_footprint()
+    for cov_pixel, (lo, hi) in blocks.items():
+        fp[np.arange(cov_pixel * nfine + lo, cov_pixel * nfine + hi)] = True
+    return fp
+
+
+@pytest.mark.parametrize('nproc', [1, 2])
+def test_cat_footprints(tmp_path, nproc):
+    """
+    the streamed union equals the in-memory union: three per-patch
+    maps, two sharing a coverage pixel with overlapping pixels, one
+    far away, with a file order that is not coverage pixel order
+    """
+    import healsparse
+
+    maps = {
+        # tract 00002 sorts after 00001 but holds the low pixels
+        '00002/00002-00010-mdet-footprint.hsp': make_block_footprint(
+            {100: (0, 5000), 101: (1000, 3000)},
+        ),
+        '00002/00002-00011-mdet-footprint.hsp': make_block_footprint(
+            {101: (2000, 4000), 102: (0, 16)},
+        ),
+        '00001/00001-00003-mdet-footprint.hsp': make_block_footprint(
+            {5000: (7, 8000)},
+        ),
+    }
+    for relname, fp in maps.items():
+        fname = tmp_path / relname
+        fname.parent.mkdir(exist_ok=True)
+        fp.write(str(fname), clobber=True)
+
+    flist = get_footprint_flist(str(tmp_path))
+    assert len(flist) == 3
+    assert os.path.basename(flist[0]).startswith('00001')
+
+    expected = np.unique(np.concatenate(
+        [fp.valid_pixels for fp in maps.values()],
+    ))
+    n_inputs = sum(fp.valid_pixels.size for fp in maps.values())
+    assert n_inputs - expected.size == 1000  # the overlap in 101
+
+    outfile = str(tmp_path / 'footprint.hsp')
+    res = cat_footprints(flist, outfile, nproc=nproc)
+    assert res['nfile'] == 3
+    assert res['ncov'] == 4
+    assert res['n_valid'] == expected.size
+    assert res['n_valid_inputs'] == n_inputs
+    assert not os.path.exists(outfile + '.incomplete')
+
+    total = healsparse.HealSparseMap.read(outfile)
+    assert total.is_bit_packed_map
+    assert total.nside_sparse == NSIDE
+    assert total.nside_coverage == NSIDE_COVERAGE
+    assert np.where(total.coverage_mask)[0].tolist() == [100, 101, 102, 5000]
+    assert np.array_equal(total.valid_pixels, expected)
+
+    # partial reads of the reshaped output
+    nfine = (NSIDE // NSIDE_COVERAGE) ** 2
+    part = healsparse.HealSparseMap.read(outfile, pixels=[101])
+    in101 = expected[(expected // nfine) == 101]
+    assert np.array_equal(part.valid_pixels, in101)
+
+    with pytest.raises(RuntimeError):
+        cat_footprints(flist, outfile, nproc=nproc)
+    res = cat_footprints(flist, outfile, nproc=nproc, clobber=True)
+    assert res['n_valid'] == expected.size
 
 
 def test_get_cell_primary():
