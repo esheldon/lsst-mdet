@@ -62,7 +62,7 @@ def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):
             extra_detections = None
             n_extra = 0
 
-        cat = get_struct(bands=bands, n=sxcat.size + n_extra)
+        cat = get_struct(bands=bands, n=sxcat.size + n_extra, model=model)
 
         cat['xcell'][:nsx] = sxcat['x']
         cat['ycell'][:nsx] = sxcat['y']
@@ -104,7 +104,7 @@ def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):
         fig.savefig('bad-psfs.png', dpi=150)
 
         # can't do extra without a psf
-        cat = get_struct(bands=bands, n=sxcat.size)
+        cat = get_struct(bands=bands, n=sxcat.size, model=model)
 
         cat['xcell'] = sxcat['x']
         cat['ycell'] = sxcat['y']

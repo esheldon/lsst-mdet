@@ -487,6 +487,15 @@ def main(
         starsub=starsub,
         deblend=deblend,
         s2_detect=s2_detect,
+        run_options=dict(
+            repo=repo,
+            collections=collections,
+            patch_dir=patch_dir,
+            gaia_file=gaia_file,
+            gsub=gsub,
+            apod_stars=apod_stars,
+            cells=cells,
+        ),
     )
 
     if star_table is not None and star_table.size > 0:

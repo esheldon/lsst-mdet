@@ -25,6 +25,24 @@ GROUP_BOX_PAD = 10
 # limit cycles and the scaled caps only multiply their cost
 MAXITER_SIZE_REF = 8.0
 
+# the deblend settings, recorded in the output meta table (see
+# io.write_output).  tguess_min/max bound the size guess from the
+# sep moments; the unbounded-above sep size is also passed to
+# kdeblend as Tdet, the object's footprint size for its weight
+# bound
+DEBLEND_SETTINGS = dict(
+    tol=1.0e-5,
+    maxiter=500,
+    maxiter_type='fixed',
+    recenter=True,
+    full_errors=True,
+    ap_rad=1.5,  # pixels
+    cen_sigma0=0.1,
+    e_sigma0=0.0,
+    tguess_min=0.05,
+    tguess_max=5.0,
+)
+
 
 def fit_deblend(
     mbobs,
@@ -100,16 +118,17 @@ def fit_deblend(
     from ngmix.prepsfadmom.prep import choose_fwhm_smooth
     from ngmix import GMixFatalError
 
-    tol = 1.0e-5
-    maxiter = 500
-    maxiter_type = "fixed"
-    recenter = True
-    full_errors = True
+    s = DEBLEND_SETTINGS
+    tol = s['tol']
+    maxiter = s['maxiter']
+    maxiter_type = s['maxiter_type']
+    recenter = s['recenter']
+    full_errors = s['full_errors']
 
-    ap_rad = 1.5  # pixels
-    cen_sigma0 = 0.1
-    e_sigma0 = 0.0
-    tguess_range = (0.05, 5.0)
+    ap_rad = s['ap_rad']
+    cen_sigma0 = s['cen_sigma0']
+    e_sigma0 = s['e_sigma0']
+    tguess_range = (s['tguess_min'], s['tguess_max'])
 
     bands = [obslist[0].meta['band'] for obslist in mbobs]
 
@@ -124,10 +143,13 @@ def fit_deblend(
     scale = jacobian.scale
     v, u = jacobian.get_vu(row=sxcat['y'], col=sxcat['x'])
 
-    Tguess = np.clip(
-        (sxcat['x2'] + sxcat['y2']) * scale ** 2,
-        tguess_range[0], tguess_range[1],
-    )
+    # the sep isophotal size: clipped both ways as the size guess,
+    # floored only as Tdet, the footprint size kdeblend bounds the
+    # adaptive weight with (an object's weight may not grow beyond
+    # WEIGHT_TMAX_FAC times its footprint plus the smoothing)
+    Tiso = (sxcat['x2'] + sxcat['y2']) * scale ** 2
+    Tguess = np.clip(Tiso, tguess_range[0], tguess_range[1])
+    Tdet = np.maximum(Tiso, tguess_range[0])
 
     objects = [
         {
@@ -135,12 +157,14 @@ def fit_deblend(
             'u': u[i],
             'type': model,
             'Tguess': Tguess[i],
+            'Tdet': float(Tdet[i]),
         }
         for i in range(sxcat.size)
     ]
 
     fwhm_smooth = choose_fwhm_smooth(mbobs, rng=rng)
     Tsmooth = fwhm_to_T(fwhm_smooth)
+    cat['fwhm_smooth'] = fwhm_smooth
 
     groups = get_groups(sxcat=sxcat, seg=seg)
 
@@ -171,6 +195,7 @@ def fit_deblend(
                 u=u,
                 type=model,
                 Tguess=Tguess_inj,
+                Tdet=Tguess_inj,
                 fixcen=bool(
                     extra_fixcen is not None and extra_fixcen[k]
                 ),
@@ -349,12 +374,25 @@ def fit_one_group(
 
 def pack_deblend_object(st, obj_res, bands, jacobian):
     """
-    flags and numiter set outside.  deblend_flags is the kdeblend
-    flag word as is (see kdeblend.flags); it shares the NO_ATTEMPT
-    bit convention with the other flags columns.  g_flags is the
-    kdeblend e_flags word (ngmix bits, never NO_ATTEMPT): zero iff
-    the shape and its errors are usable.  A star has no shape by
-    construction, so its g columns are never attempted
+    Pack one kdeblend per-object result into a catalog row.
+
+    flags and numiter are set outside.  deblend_flags is the
+    kdeblend flag word as is (see kdeblend.flags); it shares the
+    NO_ATTEMPT bit convention with the other flags columns.
+    g_flags is the kdeblend e_flags word (ngmix bits, never
+    NO_ATTEMPT): zero iff the shape and its errors are usable.  A
+    star has no shape by construction, so its g columns are never
+    attempted; a demotion to star is the DEBLENDED_AS_PSF bit of
+    deblend_flags.
+
+    The flux columns hold the model's total: the family flux for
+    exp and bdf, the psf flux for a star, and for a ladder the
+    tau-completed total_flux.  A ladder's colors come from its
+    adaptive-aperture (gauss) fluxes with their covariance, the
+    lower-noise and less contaminated estimator; those fluxes and
+    the fixed-minus-adaptive color gradient fill the ladder-only
+    columns of the struct.  s2n is the covariance-aware flux s/n of
+    the family flux, which for a ladder is the gauss flux
     """
     st['deblend_flags'] = obj_res['deblend_flags']
 
@@ -377,20 +415,43 @@ def pack_deblend_object(st, obj_res, bands, jacobian):
     st['T'] = obj_res['T']
     st['T_err'] = obj_res['T_err']
 
-    set_fluxes(
-        st=st,
-        bands=bands,
-        flux=obj_res['flux'],
-        flux_err=obj_res['flux_err'],
-    )
-
-    set_colors(
-        st=st,
-        bands=bands,
-        flux=obj_res['flux'],
-        flux_err=obj_res['flux_err'],
-        flux_cov=obj_res['flux_cov'],
-    )
+    if obj_res['type'] == 'ladder':
+        set_fluxes(
+            st=st,
+            bands=bands,
+            flux=obj_res['total_flux'],
+            flux_err=obj_res['total_flux_err'],
+        )
+        gflux = obj_res['gauss_flux']
+        gflux_err = obj_res['gauss_flux_err']
+        set_colors(
+            st=st,
+            bands=bands,
+            flux=gflux,
+            flux_err=gflux_err,
+            flux_cov=obj_res.get('gauss_flux_cov'),
+        )
+        for iband, band in enumerate(bands):
+            st[f'gauss_flux_{band}'] = gflux[iband]
+            st[f'gauss_flux_err_{band}'] = gflux_err[iband]
+        for i in range(len(bands) - 1):
+            name = f'gradient_{bands[i]}m{bands[i + 1]}'
+            st[name] = obj_res['gradient'][i]
+            st[f'{name}_err'] = obj_res['gradient_err'][i]
+    else:
+        set_fluxes(
+            st=st,
+            bands=bands,
+            flux=obj_res['flux'],
+            flux_err=obj_res['flux_err'],
+        )
+        set_colors(
+            st=st,
+            bands=bands,
+            flux=obj_res['flux'],
+            flux_err=obj_res['flux_err'],
+            flux_cov=obj_res['flux_cov'],
+        )
 
     st['s2n'] = obj_res['s2n']
     row, col = jacobian.get_rowcol(obj_res['cen'][0], obj_res['cen'][1])

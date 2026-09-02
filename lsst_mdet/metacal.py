@@ -3,6 +3,18 @@ metacal image and noise processing
 """
 from .detect import get_detect_noise, make_kernel
 
+# the metacal settings, recorded in the output meta table (see
+# provenance.py): the sheared types run on the image, the type the
+# noise field is run with (the fusion filter takes the max over
+# the requested types; 1p reproduces the sheared-pair envelope),
+# and the names of the metacal target psf and noise filter classes
+METACAL_SETTINGS = dict(
+    types='noshear,1p,1m',
+    noise_types='1p',
+    target_psf='AZGauss',
+    noise_filter='FusionFilter',
+)
+
 
 def do_all_metacal(mbobs, rng):
     import ngmix
@@ -45,18 +57,19 @@ def do_metacal_one_band(obs, rng):
     """
     import numpy as np
 
+    noise_types = METACAL_SETTINGS['noise_types'].split(',')
     odict = run_metacal(
         obs=obs,
         rng=rng,
-        types=['noshear', '1p', '1m'],
+        types=METACAL_SETTINGS['types'].split(','),
     )
     ndict = run_metacal(
         obs=make_noise_obs(obs),
         rng=rng,
-        types=['1p'],
+        types=noise_types,
     )
 
-    mcal_noise = ndict['1p'].image
+    mcal_noise = ndict[noise_types[0]].image
 
     sigma_band = get_detect_noise(
         noise=mcal_noise,
@@ -121,10 +134,12 @@ def run_metacal(obs, rng, types):
     """
     import metacal
 
+    target_psf = getattr(metacal, METACAL_SETTINGS['target_psf'])()
+    noise_filter = getattr(metacal, METACAL_SETTINGS['noise_filter'])()
     odict = metacal.metacal_obs(
         obs=obs,
-        target_psf=metacal.AZGauss(),
-        noise_filter=metacal.FusionFilter(),
+        target_psf=target_psf,
+        noise_filter=noise_filter,
         rng=rng,
         types=types,
     )
