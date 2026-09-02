@@ -41,6 +41,12 @@ DEBLEND_SETTINGS = dict(
     e_sigma0=0.0,
     tguess_min=0.05,
     tguess_max=5.0,
+    # extra detections are injected with their centers pinned:
+    # with every center free the crowded groups fail to converge
+    # (simcoadd-mdet docs/detection-adaptive-null, 376 flagged
+    # rows in 16 scenes); pinning the extras only, with the sep
+    # rows recentered, is the validated stable setting
+    extra_fixcen=True,
 )
 
 

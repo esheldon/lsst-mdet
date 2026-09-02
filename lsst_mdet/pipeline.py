@@ -2,7 +2,7 @@
 per-cell processing orchestration
 """
 from .coadd import coadd_mbobs
-from .deblend import fit_deblend
+from .deblend import fit_deblend, DEBLEND_SETTINGS
 from .defaults import PSF_FAILURE
 from .detect import run_sep
 from .extra_detect import get_s2_extra_detections
@@ -82,6 +82,9 @@ def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):
                 rng=rng,
             )
         else:
+            extra_fixcen = None
+            if n_extra > 0 and DEBLEND_SETTINGS['extra_fixcen']:
+                extra_fixcen = np.ones(n_extra, dtype=bool)
             fit_deblend(
                 mbobs=mbobs,
                 sxcat=sxcat,
@@ -90,6 +93,7 @@ def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):
                 model=model,
                 rng=rng,
                 extra_detections=extra_detections,
+                extra_fixcen=extra_fixcen,
                 show=show,
             )
 
