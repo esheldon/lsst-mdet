@@ -165,19 +165,29 @@ def make_hsp_map(total, quantity, nside, min_n):
     return hsp_map
 
 
-def plot_map(hsp_map, output, quantity, title, cmap=None,
-             vmin=None, vmax=None):
+def render_map(hsp_map, quantity=None, title=None, cmap=None,
+               vmin=None, vmax=None, xsize=2000, label=None,
+               ra_range=None, dec_range=None):
     """
-    render the map with skyproj, zoomed to the covered area.  g1/g2
-    default to a diverging map on a symmetric scale about zero;
-    other quantities to the 2-98 percentile range
+    draw the map with skyproj, zoomed to the covered area or to the
+    given ra/dec window, with a colorbar; shared by the png writer
+    and lsst-mdet-view-map.  The quantities g1/g2 default to a
+    diverging map on a symmetric scale about zero; everything else
+    to the 2-98 percentile range.  ra values past 360 express a
+    window crossing ra = 0; interactively the window is only the
+    starting view
+
+    Returns
+    -------
+    fig, sp: the matplotlib figure and the Skyproj
     """
-    import matplotlib
-    matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     import skyproj
 
     from .plot_footprint import fit_figure_to_map
+
+    if (ra_range is None) != (dec_range is None):
+        raise ValueError('give both ra_range and dec_range, or neither')
 
     vals = hsp_map[hsp_map.valid_pixels]
     is_shear = quantity in ('g1', 'g2')
@@ -192,16 +202,44 @@ def plot_map(hsp_map, output, quantity, title, cmap=None,
             vmax = hi
     if cmap is None:
         cmap = 'RdBu_r' if is_shear else 'viridis'
+    if label is None:
+        label = f'{quantity}/R' if is_shear else quantity
 
     fig, ax = plt.subplots(figsize=(14, 7))
-    sp = skyproj.McBrydeSkyproj(ax=ax)
-    sp.draw_hspmap(hsp_map, xsize=2000, vmin=vmin, vmax=vmax, cmap=cmap)
+    if ra_range is not None:
+        lon_0 = np.mean(ra_range) % 360
+        sp = skyproj.McBrydeSkyproj(ax=ax, lon_0=lon_0)
+        sp.draw_hspmap(
+            hsp_map, zoom=False, lon_range=ra_range,
+            lat_range=dec_range, xsize=xsize, vmin=vmin, vmax=vmax,
+            cmap=cmap,
+        )
+    else:
+        sp = skyproj.McBrydeSkyproj(ax=ax)
+        sp.draw_hspmap(
+            hsp_map, xsize=xsize, vmin=vmin, vmax=vmax, cmap=cmap,
+        )
 
     fit_figure_to_map(fig, sp)
-    label = f'{quantity}/R' if is_shear else quantity
     sp.draw_colorbar(label=label)
-    sp.ax.set_title(title, pad=30)
+    if title is not None:
+        sp.ax.set_title(title, pad=30)
+    return fig, sp
 
+
+def plot_map(hsp_map, output, quantity, title, cmap=None,
+             vmin=None, vmax=None, ra_range=None, dec_range=None):
+    """
+    render the map to an image file
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    fig, _ = render_map(
+        hsp_map, quantity=quantity, title=title, cmap=cmap,
+        vmin=vmin, vmax=vmax, ra_range=ra_range, dec_range=dec_range,
+    )
     print('writing', output)
     fig.savefig(output, dpi=150, bbox_inches='tight')
     plt.close(fig)
@@ -222,11 +260,15 @@ def go(args):
             raise RuntimeError(f'no map to plot: {output}')
 
         hsp_map = healsparse.HealSparseMap.read(output)
-        title = os.path.basename(output).replace('.hsp', '')
+        png = args.png
+        if png is None:
+            png = os.path.splitext(output)[0] + '.png'
+        title = os.path.basename(png).replace('.png', '')
         plot_map(
-            hsp_map, os.path.splitext(output)[0] + '.png',
+            hsp_map, png,
             args.quantity, title, cmap=args.cmap,
             vmin=args.vmin, vmax=args.vmax,
+            ra_range=args.ra_range, dec_range=args.dec_range,
         )
         return
 
@@ -267,10 +309,14 @@ def go(args):
     print('writing', output)
     hsp_map.write(output, clobber=args.clobber)
 
+    png = args.png
+    if png is None:
+        png = os.path.splitext(output)[0] + '.png'
     title = os.path.basename(output).replace('.hsp', '')
     plot_map(
-        hsp_map, os.path.splitext(output)[0] + '.png', args.quantity,
+        hsp_map, png, args.quantity,
         title, cmap=args.cmap, vmin=args.vmin, vmax=args.vmax,
+        ra_range=args.ra_range, dec_range=args.dec_range,
     )
 
 
@@ -308,6 +354,9 @@ def get_args():
                         help='output map; default <run-dir>/<run>-'
                              'map-<quantity>-nside<nside>.hsp, with '
                              'the png beside it')
+    parser.add_argument('--png',
+                        help='output png; default the map file '
+                             'with a .png extension')
     parser.add_argument('--nproc', type=int, default=DEFAULT_NPROC,
                         help='processes for reading the catalogs')
     parser.add_argument('--vmin', type=float,
@@ -319,6 +368,14 @@ def get_args():
     parser.add_argument('--cmap',
                         help='matplotlib colormap; default RdBu_r '
                              'for g1/g2, viridis otherwise')
+    parser.add_argument('--ra-range', type=float, nargs=2,
+                        metavar=('LOW', 'HIGH'),
+                        help='view window ra range for the png; '
+                             'values past 360 express a range '
+                             'crossing ra = 0')
+    parser.add_argument('--dec-range', type=float, nargs=2,
+                        metavar=('LOW', 'HIGH'),
+                        help='view window dec range for the png')
     parser.add_argument('--clobber', action='store_true',
                         help='overwrite an existing output')
 
@@ -327,6 +384,8 @@ def get_args():
         parser.error('--nproc must be >= 1')
     if not args.plot_only and args.config is None:
         parser.error('--config is required unless --plot-only')
+    if (args.ra_range is None) != (args.dec_range is None):
+        parser.error('give both --ra-range and --dec-range, or neither')
     return args
 
 
