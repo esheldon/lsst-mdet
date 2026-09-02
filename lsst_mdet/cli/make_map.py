@@ -212,6 +212,24 @@ def go(args):
     from .stats import describe_selection, load_config
     from .make_footprint import read_flist
 
+    if args.plot_only:
+        import healsparse
+
+        output = args.output
+        if output is None:
+            output = get_map_file(args.run_dir, args.quantity, args.nside)
+        if not os.path.exists(output):
+            raise RuntimeError(f'no map to plot: {output}')
+
+        hsp_map = healsparse.HealSparseMap.read(output)
+        title = os.path.basename(output).replace('.hsp', '')
+        plot_map(
+            hsp_map, os.path.splitext(output)[0] + '.png',
+            args.quantity, title, cmap=args.cmap,
+            vmin=args.vmin, vmax=args.vmax,
+        )
+        return
+
     config = load_config(args.config)
     print('selection:')
     print(describe_selection(config))
@@ -270,9 +288,13 @@ def get_args():
                         help='a file listing the catalogs to use, '
                              'instead of every catalog under the '
                              'run directory')
-    parser.add_argument('--config', required=True,
+    parser.add_argument('--config',
                         help='the stats yaml config; only the '
-                             'select stages are used')
+                             'select stages are used.  Required '
+                             'unless --plot-only')
+    parser.add_argument('--plot-only', action='store_true',
+                        help='re-render the png from the existing '
+                             'map instead of remaking it')
     parser.add_argument('--quantity', default='g1',
                         help='column or derived value to map; g1 '
                              'and g2 are divided by the global '
@@ -303,6 +325,8 @@ def get_args():
     args = parser.parse_args()
     if args.nproc < 1:
         parser.error('--nproc must be >= 1')
+    if not args.plot_only and args.config is None:
+        parser.error('--config is required unless --plot-only')
     return args
 
 
