@@ -1031,6 +1031,12 @@ def _get_xlabel(binval_name, bconfig):
         xlabel = r'PSF $g_1$'
     elif binval_name == 'psfrec_g2':
         xlabel = r'PSF $g_2$'
+    elif binval_name == 'psf_fwhm':
+        xlabel = 'PSF FWHM [arcsec]'
+    elif binval_name == 'mfrac':
+        xlabel = 'masked fraction'
+    elif binval_name == 'T':
+        xlabel = r'T [arcsec$^2$]'
     else:
         xlabel = binval_name
 
