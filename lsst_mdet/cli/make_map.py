@@ -227,7 +227,7 @@ def render_map(hsp_map, quantity=None, title=None, cmap=None,
     return fig, sp
 
 
-def plot_map(hsp_map, output, quantity, title, cmap=None,
+def plot_map(hsp_map, output, quantity, title=None, cmap=None,
              vmin=None, vmax=None, ra_range=None, dec_range=None):
     """
     render the map to an image file
@@ -263,10 +263,9 @@ def go(args):
         png = args.png
         if png is None:
             png = os.path.splitext(output)[0] + '.png'
-        title = os.path.basename(png).replace('.png', '')
         plot_map(
             hsp_map, png,
-            args.quantity, title, cmap=args.cmap,
+            args.quantity, cmap=args.cmap,
             vmin=args.vmin, vmax=args.vmax,
             ra_range=args.ra_range, dec_range=args.dec_range,
         )
@@ -312,10 +311,9 @@ def go(args):
     png = args.png
     if png is None:
         png = os.path.splitext(output)[0] + '.png'
-    title = os.path.basename(output).replace('.hsp', '')
     plot_map(
         hsp_map, png, args.quantity,
-        title, cmap=args.cmap, vmin=args.vmin, vmax=args.vmax,
+        cmap=args.cmap, vmin=args.vmin, vmax=args.vmax,
         ra_range=args.ra_range, dec_range=args.dec_range,
     )
 
