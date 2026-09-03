@@ -16,6 +16,9 @@ import os
 
 def go(args):
     import healsparse
+    if args.output is not None:
+        import matplotlib
+        matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
     from .make_map import render_map
@@ -37,12 +40,16 @@ def go(args):
     if title is None:
         title = os.path.basename(args.fname)
 
-    render_map(
+    fig, _ = render_map(
         hsp_map, quantity=args.quantity, title=title, cmap=args.cmap,
         vmin=args.vmin, vmax=args.vmax, xsize=args.xsize, label=label,
         ra_range=args.ra_range, dec_range=args.dec_range,
     )
-    plt.show()
+    if args.output is not None:
+        print('writing', args.output)
+        fig.savefig(args.output, dpi=args.dpi, bbox_inches='tight')
+    else:
+        plt.show()
 
 
 def get_args():
@@ -70,6 +77,11 @@ def get_args():
                              '--quantity')
     parser.add_argument('--title',
                         help='default is the map file name')
+    parser.add_argument('--output',
+                        help='write the plot to this file instead '
+                             'of viewing it')
+    parser.add_argument('--dpi', type=int, default=150,
+                        help='resolution when writing with --output')
     parser.add_argument('--ra-range', type=float, nargs=2,
                         metavar=('LOW', 'HIGH'),
                         help='starting view window ra range; values '
