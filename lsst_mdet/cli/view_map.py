@@ -11,7 +11,6 @@ at a resolution matched to the raster or set with --nside.
         --quantity g1 --vmin -0.007 --vmax 0.007
     lsst-mdet-view-map run-dp2-v00-footprint.hsp
 """
-import os
 
 
 def go(args):
@@ -36,12 +35,9 @@ def go(args):
         if label is None:
             label = 'coverage fraction'
 
-    title = args.title
-    if title is None:
-        title = os.path.basename(args.fname)
-
     fig, _ = render_map(
-        hsp_map, quantity=args.quantity, title=title, cmap=args.cmap,
+        hsp_map, quantity=args.quantity, title=args.title,
+        cmap=args.cmap,
         vmin=args.vmin, vmax=args.vmax, xsize=args.xsize, label=label,
         ra_range=args.ra_range, dec_range=args.dec_range,
     )
@@ -76,7 +72,8 @@ def get_args():
                         help='colorbar label; default from '
                              '--quantity')
     parser.add_argument('--title',
-                        help='default is the map file name')
+                        help='optional title; the quantity is on '
+                             'the colorbar, so none by default')
     parser.add_argument('--output',
                         help='write the plot to this file instead '
                              'of viewing it')
