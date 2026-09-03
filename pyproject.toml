@@ -21,6 +21,8 @@ lsst-mdet-make-footprint = "lsst_mdet.cli.make_footprint:main"
 lsst-mdet-plot-footprint = "lsst_mdet.cli.plot_footprint:main"
 lsst-mdet-make-map = "lsst_mdet.cli.make_map:main"
 lsst-mdet-view-map = "lsst_mdet.cli.view_map:main"
+lsst-mdet-make-corr-cats = "lsst_mdet.cli.make_corr_cats:main"
+lsst-mdet-starcorr = "lsst_mdet.cli.starcorr:main"
 
 lsst-mdet-dosums = "lsst_mdet.cli.stats:dosums_cli"
 lsst-mdet-dostats = "lsst_mdet.cli.stats:dostats_cli"
