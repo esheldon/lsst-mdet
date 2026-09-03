@@ -1046,7 +1046,9 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
     """
     import matplotlib.pyplot as mplt
 
-    fig, ax = mplt.subplots(figsize=(10, 10 / 1.62))
+    # sized so the ~10pt fonts stay readable at half a text width
+    # in the paper
+    fig, ax = mplt.subplots(figsize=(6.25, 6.25 / 1.62))
 
     ax.set(
         xlabel=_get_xlabel(binval_name, bconfig),
@@ -1056,11 +1058,13 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
 
     _add_scaled_hist(ax=ax, hist=means['hist'][0], bconfig=bconfig)
 
+    markersize = 4.5
     ax.errorbar(
         means['binval'][0],
         means['g1'][0],
         means['g1_err'][0],
         marker='o',
+        markersize=markersize,
         label=r'$g_1 / R$',
     )
     ax.errorbar(
@@ -1068,6 +1072,7 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
         means['g2'][0],
         means['g2_err'][0],
         marker='o',
+        markersize=markersize,
         label=r'$g_2 / R$',
     )
     ax.axhline(0, color='black')
@@ -1086,7 +1091,9 @@ def _doplot_R_vs_binval(binval_name, means, bconfig, outfront):
     """
     import matplotlib.pyplot as mplt
 
-    fig, ax = mplt.subplots(figsize=(10, 10 / 1.62))
+    # sized so the ~10pt fonts stay readable at half a text width
+    # in the paper
+    fig, ax = mplt.subplots(figsize=(5.5, 5.5 / 1.62))
 
     ax.set(
         xlabel=_get_xlabel(binval_name, bconfig),
