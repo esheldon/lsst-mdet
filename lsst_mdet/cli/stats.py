@@ -51,7 +51,7 @@ EXCLUDE_KEY = 'exclude'
 TOP_LEVEL_KEYS = ('select', 'bins', 'hist2d')
 DERIVED_VALUES = (
     'Tratio', 'T_times_T_err', 'T_div_T_err', 'gmag', 'psfrec_gmax',
-    'cell_edge_dist',
+    'cell_edge_dist', 'psf_fwhm',
 )
 CONFIG_EXTNAME = 'config'
 
@@ -287,8 +287,9 @@ def get_named_value(st, name):
     (T/psf_T), T_times_T_err, T_div_T_err, gmag (|g|), psfrec_gmax
     (the largest |psfrec g1|, |psfrec g2| over the bands),
     cell_edge_dist (pixels from the primary region boundary of the
-    cell, positive inside, negative in the overlap band), else the
-    column itself
+    cell, positive inside, negative in the overlap band), psf_fwhm
+    (arcsec, from psfrec_T with the gaussian relation T = 2 sigma^2,
+    fwhm = 2 sqrt(2 ln 2) sigma), else the column itself
     """
     import numpy as np
 
@@ -307,6 +308,9 @@ def get_named_value(st, name):
         return st['T'] / st['T_err']
     elif name == 'gmag':
         return np.hypot(st['g1'], st['g2'])
+    elif name == 'psf_fwhm':
+        sigma = np.sqrt(st['psfrec_T'] / 2)
+        return 2 * np.sqrt(2 * np.log(2)) * sigma
     elif name == 'psfrec_gmax':
         cols = [
             c for c in st.dtype.names
