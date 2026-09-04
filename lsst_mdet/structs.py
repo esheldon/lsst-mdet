@@ -168,8 +168,9 @@ def get_cell_meta(nband, n=1):
     dtype = [
         ('tract', 'i4'),
         ('patch', 'i4'),
-        ('cell_i', 'i4'),
-        ('cell_j', 'i4'),
+        # i2 to match the object catalog cell_i/cell_j
+        ('cell_i', 'i2'),
+        ('cell_j', 'i2'),
         ('good_frac', 'f4', nband),
         ('kept', bool),
     ]

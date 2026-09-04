@@ -201,7 +201,7 @@ def render_map(hsp_map, quantity=None, title=None, cmap=None,
         if vmax is None:
             vmax = hi
     if cmap is None:
-        cmap = 'RdBu_r' if is_shear else 'viridis'
+        cmap = 'RdBu_r' if is_shear else 'inferno'
     if label is None:
         label = f'{quantity}/R' if is_shear else quantity
 
@@ -215,10 +215,17 @@ def render_map(hsp_map, quantity=None, title=None, cmap=None,
             cmap=cmap,
         )
     else:
+        lon_0 = 0.0
         sp = skyproj.McBrydeSkyproj(ax=ax)
         sp.draw_hspmap(
             hsp_map, xsize=xsize, vmin=vmin, vmax=vmax, cmap=cmap,
         )
+
+    from .plot_footprint import (
+        draw_deep_field_labels, draw_gal_b_lines,
+    )
+    draw_gal_b_lines(sp, lon_0)
+    draw_deep_field_labels(sp)
 
     fit_figure_to_map(fig, sp)
     sp.draw_colorbar(label=label)
@@ -228,7 +235,8 @@ def render_map(hsp_map, quantity=None, title=None, cmap=None,
 
 
 def plot_map(hsp_map, output, quantity, title=None, cmap=None,
-             vmin=None, vmax=None, ra_range=None, dec_range=None):
+             vmin=None, vmax=None, label=None, ra_range=None,
+             dec_range=None):
     """
     render the map to an image file
     """
@@ -238,7 +246,8 @@ def plot_map(hsp_map, output, quantity, title=None, cmap=None,
 
     fig, _ = render_map(
         hsp_map, quantity=quantity, title=title, cmap=cmap,
-        vmin=vmin, vmax=vmax, ra_range=ra_range, dec_range=dec_range,
+        vmin=vmin, vmax=vmax, label=label, ra_range=ra_range,
+        dec_range=dec_range,
     )
     print('writing', output)
     fig.savefig(output, dpi=150, bbox_inches='tight')
@@ -266,7 +275,7 @@ def go(args):
         plot_map(
             hsp_map, png,
             args.quantity, cmap=args.cmap,
-            vmin=args.vmin, vmax=args.vmax,
+            vmin=args.vmin, vmax=args.vmax, label=args.label,
             ra_range=args.ra_range, dec_range=args.dec_range,
         )
         return
@@ -314,6 +323,7 @@ def go(args):
     plot_map(
         hsp_map, png, args.quantity,
         cmap=args.cmap, vmin=args.vmin, vmax=args.vmax,
+        label=args.label,
         ra_range=args.ra_range, dec_range=args.dec_range,
     )
 
@@ -363,6 +373,9 @@ def get_args():
     parser.add_argument('--vmax', type=float,
                         help='color scale maximum; default 98th '
                              'percentile, symmetric for g1/g2')
+    parser.add_argument('--label',
+                        help='colorbar label; default is the '
+                             'quantity name')
     parser.add_argument('--cmap',
                         help='matplotlib colormap; default RdBu_r '
                              'for g1/g2, viridis otherwise')

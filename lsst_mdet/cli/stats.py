@@ -1081,6 +1081,10 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront,
 
     _add_scaled_hist(ax=ax, hist=means['hist'][0], bconfig=bconfig)
 
+    # the psf ellipticity trends get weighted linear fit overlays,
+    # points without connecting lines, and the legend outside
+    is_psf_e = binval_name.startswith('psfrec_g')
+
     markersize = 4.5
     ax.errorbar(
         means['binval'][0],
@@ -1088,6 +1092,7 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront,
         means['g1_err'][0],
         marker='o',
         markersize=markersize,
+        linestyle='none' if is_psf_e else '-',
         label=r'$g_1 / R$',
     )
     ax.errorbar(
@@ -1096,14 +1101,55 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront,
         means['g2_err'][0],
         marker='o',
         markersize=markersize,
+        linestyle='none' if is_psf_e else '-',
         label=r'$g_2 / R$',
     )
+
+    # the slope against the matching psf component is the leakage
+    # alpha; the offset c is the value at zero psf ellipticity
+    if is_psf_e:
+        import numpy as np
+        x = means['binval'][0]
+        for comp, color in (('g1', 'C0'), ('g2', 'C1')):
+            y = means[comp][0]
+            e = means[f'{comp}_err'][0]
+            g = (means['hist'][0] > 100) & (e > 0) & np.isfinite(y)
+            w = 1.0 / e[g] ** 2
+            xm = np.sum(w * x[g]) / w.sum()
+            ym = np.sum(w * y[g]) / w.sum()
+            slope = (np.sum(w * (x[g] - xm) * (y[g] - ym))
+                     / np.sum(w * (x[g] - xm) ** 2))
+            serr = np.sqrt(1.0 / np.sum(w * (x[g] - xm) ** 2))
+            c0 = ym - slope * xm
+            c0err = np.sqrt(1.0 / w.sum()
+                            + xm ** 2 * serr ** 2)
+            xx = np.array([x[g].min(), x[g].max()])
+            sub = comp[1]
+            ax.plot(
+                xx, ym + slope * (xx - xm), color=color,
+                linestyle='dashed', linewidth=1,
+                label=(rf'$\alpha(g_{sub}) = {slope:+.3f} '
+                       rf'\pm {serr:.3f}$''\n'
+                       rf'$c(g_{sub}) = ({c0 * 1e3:+.2f} '
+                       rf'\pm {c0err * 1e3:.2f}) '
+                       r'\times 10^{-3}$'),
+            )
+
     ax.axhline(0, color='black')
-    ax.legend()
+    if is_psf_e:
+        # flat above the axes so the plot keeps its full width
+        ax.legend(loc='lower left',
+                  bbox_to_anchor=(0.0, 1.02, 1.0, 0.3),
+                  mode='expand', ncol=2, fontsize=8)
+    else:
+        ax.legend()
 
     outfile = outfront + f'{binval_name}.pdf'
     print('writing:', outfile)
-    fig.savefig(outfile)
+    if is_psf_e:
+        fig.savefig(outfile, bbox_inches='tight')
+    else:
+        fig.savefig(outfile)
     mplt.close(fig)
 
 
