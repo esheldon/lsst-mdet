@@ -7,13 +7,34 @@ from .detect import get_detect_noise, make_kernel
 # provenance.py): the sheared types run on the image, the type the
 # noise field is run with (the fusion filter takes the max over
 # the requested types; 1p reproduces the sheared-pair envelope),
-# and the names of the metacal target psf and noise filter classes
+# and the names of the metacal target psf and noise filter classes.
+# target_psf can also be a fixed round gaussian 'Gauss:<fwhm>',
+# see get_target_psf
 METACAL_SETTINGS = dict(
     types='noshear,1p,1m',
     noise_types='1p',
     target_psf='AZGauss',
     noise_filter='FusionFilter',
 )
+
+
+def get_target_psf():
+    """
+    the target reconvolution psf from the settings: an adaptive
+    class from the metacal package (e.g. AZGauss), or a fixed
+    round gaussian 'Gauss:<fwhm>' with the fwhm in arcsec, e.g.
+    'Gauss:1.3'.  The fixed gaussian is a galsim.GSObject, which
+    metacal uses as-is apart from the standard dilation, so every
+    cell and band is reconvolved to the same psf; it must be
+    chosen larger than any input psf
+    """
+    import metacal
+
+    spec = METACAL_SETTINGS['target_psf']
+    if spec.startswith('Gauss:'):
+        import galsim
+        return galsim.Gaussian(fwhm=float(spec.split(':', 1)[1]))
+    return getattr(metacal, spec)()
 
 
 def do_all_metacal(mbobs, rng):
@@ -134,7 +155,7 @@ def run_metacal(obs, rng, types):
     """
     import metacal
 
-    target_psf = getattr(metacal, METACAL_SETTINGS['target_psf'])()
+    target_psf = get_target_psf()
     noise_filter = getattr(metacal, METACAL_SETTINGS['noise_filter'])()
     odict = metacal.metacal_obs(
         obs=obs,

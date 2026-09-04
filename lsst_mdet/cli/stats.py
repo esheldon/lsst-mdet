@@ -42,7 +42,12 @@ read_config_text
 """
 from numba import njit
 
-SN = 0.27
+# the per-component shape noise in raw (pre-response) units, for
+# the weights: the S/N 240-950 plateau of the noise-subtracted
+# shear scatter, 0.255 after response correction, times the mean
+# response of that range, 0.855 (measured on run-dp2-v00, see its
+# notes.txt, shape noise measurement)
+SN = 0.219
 
 # the selection stages, in order
 STAGES = ('basic', 'shape', 'galaxy')
@@ -277,8 +282,10 @@ def _get_dosums_args():
 
 
 def get_weights(st):
+    # the trace is the two-component measurement variance, so it
+    # pairs with the two-component intrinsic variance 2 SN^2
     cov_trace = st['g1_err'] ** 2 + st['g2_err'] ** 2
-    return 1.0 / (SN ** 2 + cov_trace)
+    return 1.0 / (2 * SN ** 2 + cov_trace)
 
 
 def get_named_value(st, name):
@@ -960,6 +967,10 @@ def _get_plotstats_args():
     parser.add_argument('--config', required=True)
     parser.add_argument('--fname', required=True)
     parser.add_argument('--outfront', required=True)
+    parser.add_argument('--ymin', type=float, default=DEFAULT_PLOT_YMIN,
+                        help='lower y limit for the g/R trend plots')
+    parser.add_argument('--ymax', type=float, default=DEFAULT_PLOT_YMAX,
+                        help='upper y limit for the g/R trend plots')
     return parser.parse_args()
 
 
@@ -1046,7 +1057,13 @@ def _get_xlabel(binval_name, bconfig):
     return xlabel
 
 
-def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
+DEFAULT_PLOT_YMIN = -0.002
+DEFAULT_PLOT_YMAX = 0.002
+
+
+def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront,
+                           ymin=DEFAULT_PLOT_YMIN,
+                           ymax=DEFAULT_PLOT_YMAX):
     """
     the response corrected mean shear g/R in bins of the value
     """
@@ -1059,7 +1076,7 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
     ax.set(
         xlabel=_get_xlabel(binval_name, bconfig),
         ylabel=r'$g / R$',
-        ylim=[-0.002, 0.002],
+        ylim=[ymin, ymax],
     )
 
     _add_scaled_hist(ax=ax, hist=means['hist'][0], bconfig=bconfig)
@@ -1165,7 +1182,8 @@ def _doplot_hist2d(key, counts, hconfig, outfront):
     mplt.close(fig)
 
 
-def _plotstats_main(config_file, fname, outfront):
+def _plotstats_main(config_file, fname, outfront,
+                    ymin=DEFAULT_PLOT_YMIN, ymax=DEFAULT_PLOT_YMAX):
     import matplotlib
 
     # files only: never let matplotlib probe for a display, which
@@ -1183,6 +1201,8 @@ def _plotstats_main(config_file, fname, outfront):
             means=allmeans[binval_name],
             bconfig=config['bins'][binval_name],
             outfront=outfront,
+            ymin=ymin,
+            ymax=ymax,
         )
         _doplot_R_vs_binval(
             binval_name=binval_name,
@@ -1207,4 +1227,6 @@ def plotstats_cli():
         config_file=args.config,
         fname=args.fname,
         outfront=args.outfront,
+        ymin=args.ymin,
+        ymax=args.ymax,
     )
