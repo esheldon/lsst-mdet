@@ -1185,15 +1185,108 @@ def _doplot_R_vs_binval(binval_name, means, bconfig, outfront):
     mplt.close(fig)
 
 
+def _hist2d_display_edges(aconfig):
+    """
+    bin edges in the space where the binning is uniform: log10
+    values for use_log, the symlog transform for use_symlog, true
+    values for a linear axis.  Drawing these on a linear axis makes
+    every bin render the same size
+    """
+    edges = _hist2d_axis_edges(aconfig)
+    if aconfig.get('use_symlog'):
+        edges = _symlog(edges, aconfig['linthresh'])
+    return edges
+
+
+def _symlog_tick_values(minval, maxval, linthresh):
+    """
+    tick values for a symlog axis drawn in transform space: zero,
+    +/- linthresh, and 1/3 x decade values out to the limits
+    """
+    def nice_between(lo, hi):
+        return [
+            m * 10.0 ** k
+            for k in range(-10, 11)
+            for m in (1.0, 3.0)
+            if lo < m * 10.0 ** k <= hi
+        ]
+
+    ticks = [0.0]
+    if maxval > linthresh:
+        ticks += [linthresh] + nice_between(linthresh, maxval)
+    if minval < -linthresh:
+        ticks += [-linthresh] + [-v for v in nice_between(linthresh, -minval)]
+    return sorted(ticks)
+
+
+def _symlog_minor_tick_values(minval, maxval, linthresh, majors):
+    """
+    minor tick values for the log regions of a symlog axis:
+    2-9 x decade, skipping the majors
+    """
+    vals = []
+    for k in range(-10, 11):
+        for m in range(2, 10):
+            v = m * 10.0 ** k
+            if linthresh < v <= maxval and v not in majors:
+                vals.append(v)
+            if linthresh < v <= -minval and -v not in majors:
+                vals.append(-v)
+    return sorted(vals)
+
+
+def _log_style_ticks(lo, hi):
+    """
+    ticks for an axis holding log10 values that render like a
+    matplotlib log axis, so the reader can read off the true
+    values: majors at the decades labeled 10^k, minors at
+    2-9 x decade
+    """
+    import numpy as np
+
+    kmin = int(np.ceil(lo - 1e-9))
+    kmax = int(np.floor(hi + 1e-9))
+    majors = list(range(kmin, kmax + 1))
+    labels = [f'$10^{{{k}}}$' for k in majors]
+    minors = [
+        k + np.log10(m)
+        for k in range(kmin - 1, kmax + 1)
+        for m in range(2, 10)
+        if lo <= k + np.log10(m) <= hi
+    ]
+    return majors, labels, minors
+
+
 def _doplot_hist2d(key, counts, hconfig, outfront):
     import numpy as np
     import matplotlib.pyplot as mplt
     from matplotlib.colors import LogNorm
 
-    fig, ax = mplt.subplots(figsize=(8, 7))
+    xedges = _hist2d_display_edges(hconfig['x'])
+    yedges = _hist2d_display_edges(hconfig['y'])
+    nx = len(xedges) - 1
+    ny = len(yedges) - 1
 
-    xedges = _hist2d_axis_edges(hconfig['x'])
-    yedges = _hist2d_axis_edges(hconfig['y'])
+    # manual layout in inches: with the display edges uniform, an
+    # axes box scaled by the bin counts makes the bins render
+    # square, and every panel gets identical geometry.  The
+    # automatic layouts (aspect + colorbar) negotiate different
+    # axes sizes per panel and leave uneven gaps
+    boxw = 5.5
+    boxh = boxw * ny / nx
+    lmarg, bmarg, tmarg = 0.9, 0.6, 0.25
+    cpad, cwid, rmarg = 0.15, 0.22, 0.8
+    figw = lmarg + boxw + cpad + cwid + rmarg
+    figh = bmarg + boxh + tmarg
+
+    fig = mplt.figure(figsize=(figw, figh))
+    ax = fig.add_axes(
+        [lmarg / figw, bmarg / figh, boxw / figw, boxh / figh],
+    )
+    cax = fig.add_axes(
+        [(lmarg + boxw + cpad) / figw, bmarg / figh,
+         cwid / figw, boxh / figh],
+    )
 
     # rows are y for pcolormesh; empty bins masked rather than
     # drawn as the lowest color.  Rasterized: as vector art the
@@ -1203,28 +1296,46 @@ def _doplot_hist2d(key, counts, hconfig, outfront):
         xedges, yedges, masked, norm=LogNorm(), cmap='inferno',
         rasterized=True,
     )
-    fig.colorbar(pc, ax=ax, label='count')
+    fig.colorbar(pc, cax=cax, label='count')
 
-    def axis_label(aconfig):
-        label = aconfig['name']
+    # the axes hold transformed values (log10, or the symlog
+    # transform) so the bins render uniform; the ticks are painted
+    # by hand to read in true values, log-plot style, with 2-9 x
+    # decade minors
+    for axis, set_ticks in (('x', ax.set_xticks), ('y', ax.set_yticks)):
+        aconfig = hconfig[axis]
+        edges = xedges if axis == 'x' else yedges
         if aconfig.get('use_log'):
-            label = r'log$_{10}$(' + label + ')'
-        return label
-
-    # a symlog axis holds true values with non-uniform edges; the
-    # matplotlib symlog scale renders it linear through zero
-    for axis, setscale in (('x', ax.set_xscale), ('y', ax.set_yscale)):
-        if hconfig[axis].get('use_symlog'):
-            setscale('symlog', linthresh=hconfig[axis]['linthresh'])
+            majors, labels, minors = _log_style_ticks(
+                edges[0], edges[-1],
+            )
+            set_ticks(majors, labels)
+            set_ticks(minors, minor=True)
+        elif aconfig.get('use_symlog'):
+            lt = aconfig['linthresh']
+            majors = _symlog_tick_values(
+                aconfig['minval'], aconfig['maxval'], lt,
+            )
+            minors = _symlog_minor_tick_values(
+                aconfig['minval'], aconfig['maxval'], lt, majors,
+            )
+            set_ticks(
+                _symlog(np.array(majors), lt),
+                [f'{t:g}' for t in majors],
+            )
+            set_ticks(_symlog(np.array(minors), lt), minor=True)
 
     ax.set(
-        xlabel=axis_label(hconfig['x']),
-        ylabel=axis_label(hconfig['y']),
+        xlabel=hconfig['x']['name'],
+        ylabel=hconfig['y']['name'],
     )
 
     outfile = outfront + f'hist2d-{key}.pdf'
     print('writing:', outfile)
-    fig.savefig(outfile)
+    # dpi applies only to the rasterized mesh; the default 100 is
+    # visibly soft in print.  tight: the aspect-constrained axes
+    # leaves wide margins in the fixed figure size
+    fig.savefig(outfile, dpi=300, bbox_inches='tight')
     mplt.close(fig)
 
 

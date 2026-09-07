@@ -118,6 +118,129 @@ def get_pixel_scale(wcs, x, y):
     return float(np.sqrt(np.abs(np.linalg.det(m))))
 
 
+# the star-exclusion boundary beyond the attenuation zone (mask
+# circle + taper), DES style: objects closer than this have their
+# moment aperture overlapping the attenuated region, giving a
+# tangential shear ring of +3 to +13 x10^-3 confined to ~4 arcsec
+# beyond the mask radius law (2026-09 diagnostics, run-dp2-v00
+# notes).  The boundary is referenced to the taper edge with
+# margin for larger-than-average apertures
+EXCLUSION_BOUNDARY = 4.0   # arcsec
+
+# stars fainter than the subtraction/masking limit have no mask
+# or taper; their contamination is blending with the unsubtracted
+# star light, measured confined to r < 4 arcsec (gamma_t spike
+# +5 x10^-3), excluded with a fixed circle with margin
+EXCLUSION_FAINT_RADIUS = 6.0   # arcsec
+EXCLUSION_FAINT_GMAX = 20.0
+
+EXCLUSION_CHUNK = 20000    # stars per task
+
+
+def star_exclusion_radii(gmag, boundary=EXCLUSION_BOUNDARY,
+                         faint_radius=EXCLUSION_FAINT_RADIUS):
+    """
+    the star exclusion radius in degrees: for masked stars
+    (G < starsub GSUB) the mask radius law plus the taper width,
+    at the nominal 0.2 arcsec pixel scale, plus the boundary;
+    for fainter (unmasked) stars the fixed faint radius
+
+    Parameters
+    ----------
+    gmag: array
+        Gaia G magnitudes
+    boundary: float, optional
+        The extra margin beyond the attenuation zone, arcsec
+    faint_radius: float, optional
+        The circle for unmasked stars, arcsec
+
+    Returns
+    -------
+    radius in degrees, same shape as gmag
+    """
+    from .starsub import circle_radius, APOD_STARS, GSUB
+    rad_arcsec = np.where(
+        np.asarray(gmag) < GSUB,
+        (circle_radius(gmag) + APOD_STARS) * 0.2 + boundary,
+        faint_radius,
+    )
+    return rad_arcsec / 3600.0
+
+
+def _exclusion_pixels(task):
+    import hpgeom
+    ra, dec, rad_deg = task
+    pix = [
+        hpgeom.query_circle(
+            NSIDE, r, d, rr, nest=True, inclusive=False,
+        )
+        for r, d, rr in zip(ra, dec, rad_deg)
+    ]
+    return np.unique(np.concatenate(pix))
+
+
+def make_star_exclusion_map(ra, dec, gmag,
+                            boundary=EXCLUSION_BOUNDARY,
+                            faint_radius=EXCLUSION_FAINT_RADIUS,
+                            nproc=1):
+    """
+    build the star exclusion map: True inside a circle of
+    star_exclusion_radii around each star.  AND NOT this map
+    with a footprint (or look up object positions in it) to
+    apply the exclusion
+
+    Parameters
+    ----------
+    ra, dec: arrays
+        The star positions, degrees
+    gmag: array
+        Gaia G magnitudes
+    boundary: float, optional
+        The extra margin beyond the attenuation zone, arcsec
+    faint_radius: float, optional
+        The circle for unmasked stars, arcsec
+    nproc: int, optional
+        Processes for the circle queries
+
+    Returns
+    -------
+    healsparse bit-packed bool map at the footprint NSIDE
+    """
+    rad_deg = star_exclusion_radii(
+        gmag, boundary=boundary, faint_radius=faint_radius,
+    )
+    return make_circle_exclusion_map(ra, dec, rad_deg, nproc=nproc)
+
+
+def make_circle_exclusion_map(ra, dec, rad_deg, nproc=1):
+    """
+    a bit-packed bool map at the footprint NSIDE, True inside the
+    given circles
+
+    Parameters
+    ----------
+    ra, dec: arrays
+        The circle centers, degrees
+    rad_deg: array
+        The circle radii, degrees
+    nproc: int, optional
+        Processes for the circle queries
+    """
+    chunks = [
+        (ra[i:i + EXCLUSION_CHUNK],
+         dec[i:i + EXCLUSION_CHUNK],
+         rad_deg[i:i + EXCLUSION_CHUNK])
+        for i in range(0, ra.size, EXCLUSION_CHUNK)
+    ]
+    with _get_pool(nproc) as pool:
+        results = _pool_map(pool, _exclusion_pixels, chunks)
+
+    exmap = make_empty_footprint()
+    for pix in results:
+        exmap[pix] = True
+    return exmap
+
+
 def make_patch_polygon(ra, dec):
     """
     Make a polygon for the patch region

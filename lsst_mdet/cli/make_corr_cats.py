@@ -10,7 +10,11 @@ global shear response from the sheared steps is stored in the
 header as R, and the selection config in a 'config' extension.
 The star catalog holds ra, dec and the G magnitude of the gaia
 stars used in the processing, deduplicated across the per-tract
-files and cut to the run footprint.
+files and cut to the coarse fracdet neighborhood of the footprint
+(so masked stars, whose own positions fall in the holes, are
+kept).  Galaxies are cut to the footprint with an exact lookup,
+so a footprint carrying the star exclusion holes
+(lsst-mdet-make-star-exclusion) applies them here.
 
     lsst-mdet-make-corr-cats --run-dir . \\
         --config stats/sums_config.yaml --nproc 16
@@ -21,6 +25,13 @@ import numpy as np
 
 DEFAULT_NPROC = 8
 CAT_CHUNK = 200
+
+# the footprint used for the galaxy cut: galaxies are kept only
+# where the map is True (an exact lookup, unlike the coarse
+# fracdet neighborhood test of the star cut), in every shear step
+# so the response sums see the same position cut.  Loaded in the
+# parent before the fork pool so the workers share it
+SELECT_FOOTPRINT = None
 
 
 def get_gals_file(run_dir):
@@ -69,6 +80,11 @@ def _gal_chunk(task):
     rsums = {'w1p': 0.0, 'g1p': 0.0, 'w1m': 0.0, 'g1m': 0.0}
     for fname in fnames:
         gals = apply_selection(rustfits.read(fname), config)
+        if SELECT_FOOTPRINT is not None:
+            keep = SELECT_FOOTPRINT.get_values_pos(
+                gals['ra'], gals['dec'],
+            )
+            gals = gals[keep]
         weights = get_weights(gals)
 
         wns, = np.where(gals['mcal_step'] == 'ns')
@@ -177,6 +193,14 @@ def go(args):
     with rustfits.FITS(stars_file, 'w+') as fits:
         fits.write_table(stars, extname='stars', compress=True)
 
+    if footprint_file is not None:
+        import healsparse
+        global SELECT_FOOTPRINT
+        print('galaxy selection footprint:', footprint_file)
+        SELECT_FOOTPRINT = healsparse.HealSparseMap.read(
+            footprint_file,
+        )
+
     print(f'{len(flist)} catalogs')
     gals, rsums = make_gal_cat(flist, config, nproc=args.nproc)
     resp = get_response(rsums)
@@ -213,9 +237,11 @@ def get_args():
     parser.add_argument('--gaia-pattern', default=GAIA_PATTERN,
                         help='the per-tract gaia star files')
     parser.add_argument('--footprint',
-                        help='footprint map for the star cut; '
-                             'default the run footprint, no cut '
-                             'if absent')
+                        help='footprint map: stars are cut to its '
+                             'coarse fracdet neighborhood, galaxies '
+                             'to an exact lookup (so the star '
+                             'exclusion holes apply); default the '
+                             'run footprint, no cut if absent')
     parser.add_argument('--gals-output',
                         help='default <run-dir>/<run>-corr-gals.fits')
     parser.add_argument('--stars-output',
