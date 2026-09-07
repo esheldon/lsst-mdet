@@ -70,7 +70,7 @@ def settings_entries():
     cannot drift from what ran.
     """
     from . import defaults, detect, metacal, deblend, extra_detect
-    from . import starsub, mfrac, apodize
+    from . import starsub, mfrac, apodize, inject
 
     entries = []
 
@@ -85,6 +85,7 @@ def settings_entries():
     entries += _prefixed('detect', detect.DETECT_SETTINGS)
     entries += _prefixed('mcal', metacal.METACAL_SETTINGS)
     entries += _prefixed('deblend', deblend.DEBLEND_SETTINGS)
+    entries += _prefixed('inject', inject.INJECT_SETTINGS)
     entries += [
         ('deblend_r_dup_fit', deblend.R_DUP_FIT),
         ('deblend_group_box_pad', deblend.GROUP_BOX_PAD),

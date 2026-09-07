@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 [project.scripts]
 lsst-mdet-process-cells = "lsst_mdet.cli.process_cells:main_cli"
 lsst-mdet-process-node = "lsst_mdet.cli.process_node:main"
+lsst-mdet-inject-node = "lsst_mdet.cli.inject_node:main"
 lsst-mdet-getimages = "lsst_mdet.cli.getimages:main"
 lsst-mdet-make-slurm = "lsst_mdet.cli.make_slurm:main"
 lsst-mdet-make-slurm-nersc = "lsst_mdet.cli.make_slurm_nersc:main"

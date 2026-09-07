@@ -406,6 +406,23 @@ def main(
     tload = time.time() - tstart
     print(f'load time: {tload:.1f} s')
 
+    # the amplified differential injection test (lsst_mdet.inject,
+    # set up by lsst-mdet-inject-node): add the tabulated residual
+    # halos to the final image state before any cell processing
+    from ..inject import INJECT_SETTINGS, inject_residual_halos
+    if INJECT_SETTINGS['profiles'] is not None:
+        if star_table is None or star_table.size == 0:
+            raise RuntimeError(
+                'halo injection needs the star census; run with '
+                'star subtraction enabled'
+            )
+        inject_residual_halos(
+            deep_coadds, star_table,
+            INJECT_SETTINGS['profiles'],
+            scale=INJECT_SETTINGS['scale'],
+            gmax=INJECT_SETTINGS['gmax'],
+        )
+
     if progress:
         mrng_i = trange(1, 21, desc='cell_i', ncols=80, ascii=True)
     else:

@@ -324,7 +324,12 @@ def go(args):
     return 1 if failed else 0
 
 
-def get_args():
+def get_node_parser():
+    """
+    the node driver parser: the process_cells options (per_patch
+    disabled) plus the node driver group.  Split out so wrapper
+    CLIs (lsst-mdet-inject-node) can extend it before parsing
+    """
     from .process_cells import parse_cell
 
     parser = get_parser(per_patch=False)
@@ -353,11 +358,18 @@ def get_args():
                       default=DEFAULT_WARMUP_CELLS,
                       help='cells of the first patch to process for '
                            'the warmup, default 10,10 11,11')
+    return parser
 
-    args = parser.parse_args()
+
+def validate_node_args(parser, args):
     if args.nproc < 1:
         parser.error('--nproc must be >= 1')
 
+
+def get_args():
+    parser = get_node_parser()
+    args = parser.parse_args()
+    validate_node_args(parser, args)
     return args
 
 
