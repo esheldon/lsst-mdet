@@ -1287,9 +1287,23 @@ def field_segmentation(image, good, sig):
 
     imf = np.ascontiguousarray(image, dtype='f4')
 
-    _, seg = sep.extract(
-        imf, 1.5, err=sig, mask=~good, segmentation_map=True,
-    )
+    try:
+        _, seg = sep.extract(
+            imf, 1.5, err=sig, mask=~good, segmentation_map=True,
+        )
+    except Exception as err:
+        if 'deblending overflow' not in str(err):
+            raise
+        # a very bright star's wing above threshold can exceed
+        # the sub-object limit (seen on visit images).  The
+        # map only masks neighbors, so deblending is not needed:
+        # retry with a single deblend threshold (no sub-objects)
+        print('    segmentation deblending overflow; '
+              'retrying without deblending')
+        _, seg = sep.extract(
+            imf, 1.5, err=sig, mask=~good, segmentation_map=True,
+            deblend_nthresh=1, deblend_cont=1.0,
+        )
 
     return seg
 
