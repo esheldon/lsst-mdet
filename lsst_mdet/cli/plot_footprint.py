@@ -54,30 +54,98 @@ def fit_figure_to_map(fig, sp):
     fig.set_size_inches(width, height)
 
 
-def draw_gal_b_lines(sp, lon_0, min_abs_b):
+# the reference galactic latitudes drawn on the maps: the survey
+# cut at |b| = 20 (dashed) and |b| = 30 (dotted)
+GAL_B_LINES = (DEFAULT_MIN_ABS_B, 30.0)
+
+# the deep fields with processed area, for map labels; the same
+# centers define the wide/deep split of the null tests
+DEEP_FIELDS = {
+    'COSMOS': (150.1, 2.2),
+    'ELAIS-S1': (9.45, -44.0),
+    'ECDFS': (53.1, -28.1),
+    'EDF-S': (61.0, -48.4),
+}
+
+
+def draw_gal_b_lines(sp, lon_0, b_values=GAL_B_LINES):
     """
-    draw the galactic latitude cut as dashed curves at b of
-    +min_abs_b and -min_abs_b
+    draw galactic latitude reference curves at +/- each |b| in
+    b_values; the first dashed (the survey cut), later ones dotted
     """
     from astropy.coordinates import SkyCoord
 
     wrap = (lon_0 + 180.0) % 360
-    for i, b in enumerate((min_abs_b, -min_abs_b)):
-        gl = np.linspace(0.0, 360.0, 721)
-        crd = SkyCoord(
-            l=gl, b=np.full(gl.size, b), frame='galactic', unit='deg',
-        ).icrs
-        ra = crd.ra.deg
-        dec = crd.dec.deg
-        # the curve winds once around the sky in ra; order it away
-        # from the projection wrap so no segment crosses the wrap
-        order = np.argsort((ra - wrap) % 360)
-        label = f'galactic $|b| = {min_abs_b:g}^\\circ$' if i == 0 else None
-        sp.ax.plot(
-            ra[order], dec[order], color='gray', linestyle='dashed',
-            linewidth=1, label=label,
+    styles = ('dashed', 'dotted', 'dashdot')
+    # the x limits are inverted in the astronomy convention
+    x0, x1 = sorted(sp.ax.get_xlim())
+    y0, y1 = sorted(sp.ax.get_ylim())
+    for k, abs_b in enumerate(np.atleast_1d(b_values)):
+        style = styles[k % len(styles)]
+        for b in (abs_b, -abs_b):
+            gl = np.linspace(0.0, 360.0, 721)
+            crd = SkyCoord(
+                l=gl, b=np.full(gl.size, b), frame='galactic',
+                unit='deg',
+            ).icrs
+            ra = crd.ra.deg
+            dec = crd.dec.deg
+            # keep the curve in its natural galactic-longitude
+            # order (a small circle is double valued in ra) and
+            # break the path where it crosses the projection wrap
+            rw = (ra - wrap) % 360
+            cut = np.where(np.abs(np.diff(rw)) > 180)[0] + 1
+            sp.ax.plot(
+                np.insert(ra, cut, np.nan),
+                np.insert(dec, cut, np.nan),
+                color='gray', linestyle=style, linewidth=1,
+            )
+
+            # label the curve directly, near each visible end
+            px, py = sp.proj(ra, dec)
+            good = (
+                np.isfinite(px) & (px > x0) & (px < x1)
+                & (py > y0) & (py < y1)
+            )
+            if not np.any(good):
+                continue
+            gidx = np.where(good)[0]
+            gx = px[gidx]
+            span = gx.max() - gx.min()
+            used = []
+            # stagger the label positions of successive |b|
+            # values so they do not collide where the curves
+            # converge
+            for frac in (0.05 + 0.08 * k, 0.95 - 0.08 * k):
+                j = gidx[np.argmin(np.abs(gx - (gx.min()
+                                                + frac * span)))]
+                if j in used:
+                    continue
+                used.append(j)
+                sp.ax.text(
+                    ra[j], dec[j], f'$b = {b:+g}^\\circ$',
+                    fontsize=8, color='gray', ha='center',
+                    va='bottom', clip_on=True,
+                    bbox=dict(facecolor='white', alpha=0.7,
+                              edgecolor='none', pad=0.5),
+                )
+
+
+def draw_deep_field_labels(sp, fontsize=9):
+    """
+    label the deep fields, the text placed beside each field; the
+    white text box keeps the labels readable on any color map,
+    and labels outside the drawn region are clipped
+    """
+    for name, (ra, dec) in DEEP_FIELDS.items():
+        # anchor west of the field so the text extends away from
+        # it (ra decreases to the right in the astro convention)
+        sp.ax.text(
+            ra - 2.6, dec, name, fontsize=fontsize,
+            ha='left', va='center', color='black', clip_on=True,
+            bbox=dict(facecolor='white', alpha=0.7,
+                      edgecolor='none', pad=1),
         )
-    sp.ax.legend(loc='upper left', fontsize=10)
 
 
 def plot_footprint(
@@ -121,6 +189,9 @@ def plot_footprint(
     if (ra_range is None) != (dec_range is None):
         raise ValueError('give both ra_range and dec_range, or neither')
 
+    if cmap is None:
+        cmap = 'inferno'
+
     print('reading', fname)
     hsp_map = healsparse.HealSparseMap.read(fname)
 
@@ -151,7 +222,8 @@ def plot_footprint(
         sp.draw_hspmap(frac, xsize=xsize, vmin=0, vmax=1, cmap=cmap)
 
     if min_abs_b > 0:
-        draw_gal_b_lines(sp, lon_0, min_abs_b)
+        draw_gal_b_lines(sp, lon_0, (min_abs_b, 30.0))
+    draw_deep_field_labels(sp)
 
     fit_figure_to_map(fig, sp)
     sp.draw_colorbar(label='coverage fraction')

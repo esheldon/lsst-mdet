@@ -2,6 +2,23 @@
 sep detection: kernel, config, noise calibration
 """
 
+# the detection settings, recorded in the output meta table (see
+# provenance.py): the sep threshold in units of the kernel-scale
+# noise, the gaussian detection kernel fwhm in arcsec at the pixel
+# scale, and the sep deblending and area parameters.  deblend_cont
+# 1e-5 recovers peak-resolved objects in crowded regions that the
+# DES default 1e-3 merges; measured to add no false detections at
+# any tested density (see docs/detection-color-filter)
+DETECT_SETTINGS = dict(
+    thresh=0.8,
+    kernel_fwhm=0.8,
+    pixel_scale=0.2,
+    deblend_cont=1.0e-5,
+    deblend_nthresh=64,
+    minarea=4,
+    filter_type='conv',
+)
+
 
 def run_sep(obs):
     """
@@ -44,7 +61,7 @@ def run_sep(obs):
             noise=noise,
             config=get_sx_config(),
             mask=obs.bmask,
-            thresh=0.8,
+            thresh=DETECT_SETTINGS['thresh'],
         )
     return objs, seg
 
@@ -97,30 +114,26 @@ def get_sx_config():
     to use a detection kernel of 0.8 arcseconds assuming pixel scale
     of 0.2 (sensible for LSST)
     """
-    kernel = make_kernel()
-
+    s = DETECT_SETTINGS
     return {
-        # 1e-5 recovers peak-resolved objects in crowded
-        # regions that the DES default 1e-3 merges; measured
-        # to add no false detections at any tested density
-        # (see docs/detection-color-filter)
-        'deblend_cont': 1.0e-5,
-        'deblend_nthresh': 64,
-        'minarea': 4,
-        'filter_type': 'conv',
-        'filter_kernel': kernel,
+        'deblend_cont': s['deblend_cont'],
+        'deblend_nthresh': s['deblend_nthresh'],
+        'minarea': s['minarea'],
+        'filter_type': s['filter_type'],
+        'filter_kernel': make_kernel(),
     }
 
 
 def make_kernel():
     """
-    Make a detection kernel fwhm=0.8'' for 0.2'' pixels
+    Make the detection kernel, a 7x7 gaussian of DETECT_SETTINGS kernel_fwhm.
     """
     import ngmix
 
-    # 7x7 convolution mask of a gaussian PSF with FWHM = 4 pixels.
-    # this is 0.8 arcseconds at 0.2 arcseconds per pixel
-    fwhm = 0.8 / 0.2  # pixels
+    # 7x7 convolution mask of a gaussian PSF with FWHM = 4 pixels
+    # for the default 0.8 arcseconds at 0.2 arcseconds per pixel
+    s = DETECT_SETTINGS
+    fwhm = s['kernel_fwhm'] / s['pixel_scale']  # pixels
     T = ngmix.moments.fwhm_to_T(fwhm)
     kernel_gm = ngmix.GMixModel(
         pars=[0.0, 0.0, 0.0, 0.0, T, 1.0],

@@ -42,7 +42,12 @@ read_config_text
 """
 from numba import njit
 
-SN = 0.27
+# the per-component shape noise in raw (pre-response) units, for
+# the weights: the S/N 240-950 plateau of the noise-subtracted
+# shear scatter, 0.255 after response correction, times the mean
+# response of that range, 0.855 (measured on run-dp2-v00, see its
+# notes.txt, shape noise measurement)
+SN = 0.219
 
 # the selection stages, in order
 STAGES = ('basic', 'shape', 'galaxy')
@@ -277,8 +282,10 @@ def _get_dosums_args():
 
 
 def get_weights(st):
+    # the trace is the two-component measurement variance, so it
+    # pairs with the two-component intrinsic variance 2 SN^2
     cov_trace = st['g1_err'] ** 2 + st['g2_err'] ** 2
-    return 1.0 / (SN ** 2 + cov_trace)
+    return 1.0 / (2 * SN ** 2 + cov_trace)
 
 
 def get_named_value(st, name):
@@ -960,6 +967,10 @@ def _get_plotstats_args():
     parser.add_argument('--config', required=True)
     parser.add_argument('--fname', required=True)
     parser.add_argument('--outfront', required=True)
+    parser.add_argument('--ymin', type=float, default=DEFAULT_PLOT_YMIN,
+                        help='lower y limit for the g/R trend plots')
+    parser.add_argument('--ymax', type=float, default=DEFAULT_PLOT_YMAX,
+                        help='upper y limit for the g/R trend plots')
     return parser.parse_args()
 
 
@@ -1031,6 +1042,12 @@ def _get_xlabel(binval_name, bconfig):
         xlabel = r'PSF $g_1$'
     elif binval_name == 'psfrec_g2':
         xlabel = r'PSF $g_2$'
+    elif binval_name == 'psf_fwhm':
+        xlabel = 'PSF FWHM [arcsec]'
+    elif binval_name == 'mfrac':
+        xlabel = 'masked fraction'
+    elif binval_name == 'T':
+        xlabel = r'T [arcsec$^2$]'
     else:
         xlabel = binval_name
 
@@ -1040,7 +1057,13 @@ def _get_xlabel(binval_name, bconfig):
     return xlabel
 
 
-def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
+DEFAULT_PLOT_YMIN = -0.002
+DEFAULT_PLOT_YMAX = 0.002
+
+
+def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront,
+                           ymin=DEFAULT_PLOT_YMIN,
+                           ymax=DEFAULT_PLOT_YMAX):
     """
     the response corrected mean shear g/R in bins of the value
     """
@@ -1053,10 +1076,14 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
     ax.set(
         xlabel=_get_xlabel(binval_name, bconfig),
         ylabel=r'$g / R$',
-        ylim=[-0.002, 0.002],
+        ylim=[ymin, ymax],
     )
 
     _add_scaled_hist(ax=ax, hist=means['hist'][0], bconfig=bconfig)
+
+    # the psf ellipticity trends get weighted linear fit overlays,
+    # points without connecting lines, and the legend outside
+    is_psf_e = binval_name.startswith('psfrec_g')
 
     markersize = 4.5
     ax.errorbar(
@@ -1065,6 +1092,7 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
         means['g1_err'][0],
         marker='o',
         markersize=markersize,
+        linestyle='none' if is_psf_e else '-',
         label=r'$g_1 / R$',
     )
     ax.errorbar(
@@ -1073,14 +1101,55 @@ def _doplot_g1g2_vs_binval(binval_name, means, bconfig, outfront):
         means['g2_err'][0],
         marker='o',
         markersize=markersize,
+        linestyle='none' if is_psf_e else '-',
         label=r'$g_2 / R$',
     )
+
+    # the slope against the matching psf component is the leakage
+    # alpha; the offset c is the value at zero psf ellipticity
+    if is_psf_e:
+        import numpy as np
+        x = means['binval'][0]
+        for comp, color in (('g1', 'C0'), ('g2', 'C1')):
+            y = means[comp][0]
+            e = means[f'{comp}_err'][0]
+            g = (means['hist'][0] > 100) & (e > 0) & np.isfinite(y)
+            w = 1.0 / e[g] ** 2
+            xm = np.sum(w * x[g]) / w.sum()
+            ym = np.sum(w * y[g]) / w.sum()
+            slope = (np.sum(w * (x[g] - xm) * (y[g] - ym))
+                     / np.sum(w * (x[g] - xm) ** 2))
+            serr = np.sqrt(1.0 / np.sum(w * (x[g] - xm) ** 2))
+            c0 = ym - slope * xm
+            c0err = np.sqrt(1.0 / w.sum()
+                            + xm ** 2 * serr ** 2)
+            xx = np.array([x[g].min(), x[g].max()])
+            sub = comp[1]
+            ax.plot(
+                xx, ym + slope * (xx - xm), color=color,
+                linestyle='dashed', linewidth=1,
+                label=(rf'$\alpha(g_{sub}) = {slope:+.3f} '
+                       rf'\pm {serr:.3f}$''\n'
+                       rf'$c(g_{sub}) = ({c0 * 1e3:+.2f} '
+                       rf'\pm {c0err * 1e3:.2f}) '
+                       r'\times 10^{-3}$'),
+            )
+
     ax.axhline(0, color='black')
-    ax.legend()
+    if is_psf_e:
+        # flat above the axes so the plot keeps its full width
+        ax.legend(loc='lower left',
+                  bbox_to_anchor=(0.0, 1.02, 1.0, 0.3),
+                  mode='expand', ncol=2, fontsize=8)
+    else:
+        ax.legend()
 
     outfile = outfront + f'{binval_name}.pdf'
     print('writing:', outfile)
-    fig.savefig(outfile)
+    if is_psf_e:
+        fig.savefig(outfile, bbox_inches='tight')
+    else:
+        fig.savefig(outfile)
     mplt.close(fig)
 
 
@@ -1116,15 +1185,108 @@ def _doplot_R_vs_binval(binval_name, means, bconfig, outfront):
     mplt.close(fig)
 
 
+def _hist2d_display_edges(aconfig):
+    """
+    bin edges in the space where the binning is uniform: log10
+    values for use_log, the symlog transform for use_symlog, true
+    values for a linear axis.  Drawing these on a linear axis makes
+    every bin render the same size
+    """
+    edges = _hist2d_axis_edges(aconfig)
+    if aconfig.get('use_symlog'):
+        edges = _symlog(edges, aconfig['linthresh'])
+    return edges
+
+
+def _symlog_tick_values(minval, maxval, linthresh):
+    """
+    tick values for a symlog axis drawn in transform space: zero,
+    +/- linthresh, and 1/3 x decade values out to the limits
+    """
+    def nice_between(lo, hi):
+        return [
+            m * 10.0 ** k
+            for k in range(-10, 11)
+            for m in (1.0, 3.0)
+            if lo < m * 10.0 ** k <= hi
+        ]
+
+    ticks = [0.0]
+    if maxval > linthresh:
+        ticks += [linthresh] + nice_between(linthresh, maxval)
+    if minval < -linthresh:
+        ticks += [-linthresh] + [-v for v in nice_between(linthresh, -minval)]
+    return sorted(ticks)
+
+
+def _symlog_minor_tick_values(minval, maxval, linthresh, majors):
+    """
+    minor tick values for the log regions of a symlog axis:
+    2-9 x decade, skipping the majors
+    """
+    vals = []
+    for k in range(-10, 11):
+        for m in range(2, 10):
+            v = m * 10.0 ** k
+            if linthresh < v <= maxval and v not in majors:
+                vals.append(v)
+            if linthresh < v <= -minval and -v not in majors:
+                vals.append(-v)
+    return sorted(vals)
+
+
+def _log_style_ticks(lo, hi):
+    """
+    ticks for an axis holding log10 values that render like a
+    matplotlib log axis, so the reader can read off the true
+    values: majors at the decades labeled 10^k, minors at
+    2-9 x decade
+    """
+    import numpy as np
+
+    kmin = int(np.ceil(lo - 1e-9))
+    kmax = int(np.floor(hi + 1e-9))
+    majors = list(range(kmin, kmax + 1))
+    labels = [f'$10^{{{k}}}$' for k in majors]
+    minors = [
+        k + np.log10(m)
+        for k in range(kmin - 1, kmax + 1)
+        for m in range(2, 10)
+        if lo <= k + np.log10(m) <= hi
+    ]
+    return majors, labels, minors
+
+
 def _doplot_hist2d(key, counts, hconfig, outfront):
     import numpy as np
     import matplotlib.pyplot as mplt
     from matplotlib.colors import LogNorm
 
-    fig, ax = mplt.subplots(figsize=(8, 7))
+    xedges = _hist2d_display_edges(hconfig['x'])
+    yedges = _hist2d_display_edges(hconfig['y'])
+    nx = len(xedges) - 1
+    ny = len(yedges) - 1
 
-    xedges = _hist2d_axis_edges(hconfig['x'])
-    yedges = _hist2d_axis_edges(hconfig['y'])
+    # manual layout in inches: with the display edges uniform, an
+    # axes box scaled by the bin counts makes the bins render
+    # square, and every panel gets identical geometry.  The
+    # automatic layouts (aspect + colorbar) negotiate different
+    # axes sizes per panel and leave uneven gaps
+    boxw = 5.5
+    boxh = boxw * ny / nx
+    lmarg, bmarg, tmarg = 0.9, 0.6, 0.25
+    cpad, cwid, rmarg = 0.15, 0.22, 0.8
+    figw = lmarg + boxw + cpad + cwid + rmarg
+    figh = bmarg + boxh + tmarg
+
+    fig = mplt.figure(figsize=(figw, figh))
+    ax = fig.add_axes(
+        [lmarg / figw, bmarg / figh, boxw / figw, boxh / figh],
+    )
+    cax = fig.add_axes(
+        [(lmarg + boxw + cpad) / figw, bmarg / figh,
+         cwid / figw, boxh / figh],
+    )
 
     # rows are y for pcolormesh; empty bins masked rather than
     # drawn as the lowest color.  Rasterized: as vector art the
@@ -1134,32 +1296,51 @@ def _doplot_hist2d(key, counts, hconfig, outfront):
         xedges, yedges, masked, norm=LogNorm(), cmap='inferno',
         rasterized=True,
     )
-    fig.colorbar(pc, ax=ax, label='count')
+    fig.colorbar(pc, cax=cax, label='count')
 
-    def axis_label(aconfig):
-        label = aconfig['name']
+    # the axes hold transformed values (log10, or the symlog
+    # transform) so the bins render uniform; the ticks are painted
+    # by hand to read in true values, log-plot style, with 2-9 x
+    # decade minors
+    for axis, set_ticks in (('x', ax.set_xticks), ('y', ax.set_yticks)):
+        aconfig = hconfig[axis]
+        edges = xedges if axis == 'x' else yedges
         if aconfig.get('use_log'):
-            label = r'log$_{10}$(' + label + ')'
-        return label
-
-    # a symlog axis holds true values with non-uniform edges; the
-    # matplotlib symlog scale renders it linear through zero
-    for axis, setscale in (('x', ax.set_xscale), ('y', ax.set_yscale)):
-        if hconfig[axis].get('use_symlog'):
-            setscale('symlog', linthresh=hconfig[axis]['linthresh'])
+            majors, labels, minors = _log_style_ticks(
+                edges[0], edges[-1],
+            )
+            set_ticks(majors, labels)
+            set_ticks(minors, minor=True)
+        elif aconfig.get('use_symlog'):
+            lt = aconfig['linthresh']
+            majors = _symlog_tick_values(
+                aconfig['minval'], aconfig['maxval'], lt,
+            )
+            minors = _symlog_minor_tick_values(
+                aconfig['minval'], aconfig['maxval'], lt, majors,
+            )
+            set_ticks(
+                _symlog(np.array(majors), lt),
+                [f'{t:g}' for t in majors],
+            )
+            set_ticks(_symlog(np.array(minors), lt), minor=True)
 
     ax.set(
-        xlabel=axis_label(hconfig['x']),
-        ylabel=axis_label(hconfig['y']),
+        xlabel=hconfig['x']['name'],
+        ylabel=hconfig['y']['name'],
     )
 
     outfile = outfront + f'hist2d-{key}.pdf'
     print('writing:', outfile)
-    fig.savefig(outfile)
+    # dpi applies only to the rasterized mesh; the default 100 is
+    # visibly soft in print.  tight: the aspect-constrained axes
+    # leaves wide margins in the fixed figure size
+    fig.savefig(outfile, dpi=300, bbox_inches='tight')
     mplt.close(fig)
 
 
-def _plotstats_main(config_file, fname, outfront):
+def _plotstats_main(config_file, fname, outfront,
+                    ymin=DEFAULT_PLOT_YMIN, ymax=DEFAULT_PLOT_YMAX):
     import matplotlib
 
     # files only: never let matplotlib probe for a display, which
@@ -1177,6 +1358,8 @@ def _plotstats_main(config_file, fname, outfront):
             means=allmeans[binval_name],
             bconfig=config['bins'][binval_name],
             outfront=outfront,
+            ymin=ymin,
+            ymax=ymax,
         )
         _doplot_R_vs_binval(
             binval_name=binval_name,
@@ -1201,4 +1384,6 @@ def plotstats_cli():
         config_file=args.config,
         fname=args.fname,
         outfront=args.outfront,
+        ymin=args.ymin,
+        ymax=args.ymax,
     )

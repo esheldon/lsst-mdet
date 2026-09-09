@@ -1,7 +1,7 @@
 """
 extra-detection channels: starlet scale-2 (anull to come)
 """
-from .detect import get_sx_config, make_kernel
+from .detect import get_sx_config, make_kernel, DETECT_SETTINGS
 
 
 # starlet scale-2 extra detections: the wavelet plane index
@@ -72,7 +72,8 @@ def get_s2_extra_detections(
 
     khat = make_kernel()
     khat = khat / khat.sum()
-    p0 = norm.sf(0.8 / np.sqrt((khat ** 2).sum()))
+    sep_thresh = DETECT_SETTINGS['thresh']
+    p0 = norm.sf(sep_thresh / np.sqrt((khat ** 2).sum()))
 
     nband = len(mbobs)
     scale = detobs.jacobian.scale
@@ -138,7 +139,7 @@ def get_s2_extra_detections(
             sum(w * p for w, p in zip(nw, npl)).ravel()
         )
     v = np.concatenate(vals)
-    noise_eff = np.quantile(v, 1 - p0) / 0.8
+    noise_eff = np.quantile(v, 1 - p0) / sep_thresh
 
     sx_config = dict(get_sx_config())
     sx_config['filter_kernel'] = None

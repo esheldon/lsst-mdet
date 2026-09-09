@@ -117,6 +117,13 @@ def get_parser(per_patch=True):
     )
     parser.add_argument('--mdet', action='store_true')
     parser.add_argument(
+        '--target-psf', type=parse_target_psf, default='AZGauss',
+        help='the metacal reconvolution psf: a class from the '
+             'metacal package (default AZGauss) or a fixed round '
+             'gaussian Gauss:<fwhm arcsec>, e.g. Gauss:1.3, which '
+             'must be larger than any input psf',
+    )
+    parser.add_argument(
         '--cells', nargs='+', type=parse_cell,
         help='process only these cells, given as i,j with 1-20 '
              'for each, e.g. --cells 10,10 11,12.  Used for '
@@ -125,6 +132,25 @@ def get_parser(per_patch=True):
     parser.add_argument('--progress', action='store_true')
     parser.add_argument('--show', action='store_true')
     return parser
+
+
+def parse_target_psf(text):
+    """
+    validate a --target-psf value: a fixed gaussian Gauss:<fwhm>
+    is checked here; a class name is looked up in the metacal
+    package at first use
+    """
+    import argparse
+    if text.startswith('Gauss:'):
+        try:
+            fwhm = float(text.split(':', 1)[1])
+        except ValueError:
+            fwhm = -1.0
+        if fwhm <= 0:
+            raise argparse.ArgumentTypeError(
+                f'expected Gauss:<fwhm arcsec>, got {text!r}'
+            )
+    return text
 
 
 def parse_cell(text):
@@ -380,6 +406,23 @@ def main(
     tload = time.time() - tstart
     print(f'load time: {tload:.1f} s')
 
+    # the amplified differential injection test (lsst_mdet.inject,
+    # set up by lsst-mdet-inject-node): add the tabulated residual
+    # halos to the final image state before any cell processing
+    from ..inject import INJECT_SETTINGS, inject_residual_halos
+    if INJECT_SETTINGS['profiles'] is not None:
+        if star_table is None or star_table.size == 0:
+            raise RuntimeError(
+                'halo injection needs the star census; run with '
+                'star subtraction enabled'
+            )
+        inject_residual_halos(
+            deep_coadds, star_table,
+            INJECT_SETTINGS['profiles'],
+            scale=INJECT_SETTINGS['scale'],
+            gmax=INJECT_SETTINGS['gmax'],
+        )
+
     if progress:
         mrng_i = trange(1, 21, desc='cell_i', ncols=80, ascii=True)
     else:
@@ -487,6 +530,15 @@ def main(
         starsub=starsub,
         deblend=deblend,
         s2_detect=s2_detect,
+        run_options=dict(
+            repo=repo,
+            collections=collections,
+            patch_dir=patch_dir,
+            gaia_file=gaia_file,
+            gsub=gsub,
+            apod_stars=apod_stars,
+            cells=cells,
+        ),
     )
 
     if star_table is not None and star_table.size > 0:
@@ -550,6 +602,12 @@ def process_patch(args):
     by get_parser().parse_args() or built by the node driver from its
     common options plus the per-patch tract, patch, seed and outfile
     """
+    from ..metacal import METACAL_SETTINGS
+
+    # module-level so the whole metacal stage and the provenance
+    # record (read at output time) see the requested target psf
+    METACAL_SETTINGS['target_psf'] = args.target_psf
+
     main(
         with_mdet=args.mdet,
         seed=args.seed,

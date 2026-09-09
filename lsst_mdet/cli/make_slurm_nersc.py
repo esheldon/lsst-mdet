@@ -35,6 +35,7 @@ import os
 
 from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
 from .make_gaia import DEFAULT_MIN_ABS_B, GAIA_PATTERN, select_high_latitude
+from .process_cells import parse_target_psf
 from .make_slurm import (
     MAX_SEED,
     format_cells,
@@ -83,6 +84,7 @@ lsst-mdet-process-node \
     --nproc ${nproc} \
     --start-interval %(start_interval)g \
     --gaia-pattern '%(gaia_pattern)s' \
+    --target-psf '%(target_psf)s' \
     --redo-bg \
     --model exp \
     --deblend \
@@ -148,13 +150,14 @@ DEFAULT_MEM_PER_PATCH_GB = 4
 SHARED_MAX_NPROC = 64
 
 
-def write_script(gaia_pattern, mdet=True):
+def write_script(gaia_pattern, target_psf, mdet=True):
     fname = 'run.sh'
 
     print('writing:', fname)
     with open(fname, 'w') as fobj:
         fobj.write(SCRIPT % {
             'gaia_pattern': gaia_pattern,
+            'target_psf': target_psf,
             'start_interval': DEFAULT_START_INTERVAL,
             'mdet': ' \\\n    --mdet' if mdet else '',
         })
@@ -286,6 +289,60 @@ def select_in_box(args, good_cells, patch_jobs):
     return selected
 
 
+def read_patch_list(fname):
+    """
+    the patches of a --patch-list file, one 'tract patch [seed]'
+    per line; blank lines and # comments are skipped
+
+    Returns
+    -------
+    dict keyed by (tract, patch) holding the seed, or None when
+    the line has no seed
+    """
+    entries = {}
+    with open(fname) as fobj:
+        for line in fobj:
+            line = line.split('#')[0].strip()
+            if line == '':
+                continue
+            fields = line.split()
+            if len(fields) not in (2, 3):
+                raise ValueError(
+                    f'expected "tract patch [seed]", got {line!r}'
+                )
+            key = (int(fields[0]), int(fields[1]))
+            entries[key] = int(fields[2]) if len(fields) == 3 else None
+    return entries
+
+
+def select_in_patch_list(args, patch_jobs):
+    """
+    keep only the patches in the --patch-list file; a seed given
+    there is pinned to the patch (e.g. the seed of an earlier run
+    read from its meta extension, for a paired rerun) instead of
+    being drawn from the master rng
+    """
+    if args.patch_list is None:
+        return patch_jobs
+
+    entries = read_patch_list(args.patch_list)
+    selected = []
+    for job in patch_jobs:
+        key = (job['tract'], job['patch'])
+        if key in entries:
+            if entries[key] is not None:
+                job['seed'] = entries[key]
+            selected.append(job)
+
+    print(f'{len(selected)} of {len(patch_jobs)} patches are in '
+          f'{args.patch_list}')
+    nmissing = len(entries) - len(selected)
+    if nmissing > 0:
+        print(f'WARNING: {nmissing} patches in the list have no '
+              'good cells here')
+    return selected
+
+
 def select_with_gaia(patches, gaia_pattern):
     """
     keep the patches with a gaia file; the rest are written to
@@ -398,7 +455,9 @@ def write_joblist(args, rng, index, jobs):
         for job in jobs:
             tract = job['tract']
             patch = job['patch']
-            seed = rng.choice(MAX_SEED)
+            seed = job.get('seed')
+            if seed is None:
+                seed = rng.choice(MAX_SEED)
             outfile = get_outfile(tract=tract, patch=patch)
             cells = format_cells(job['cells'])
             fobj.write(f'{seed} {tract} {patch} {outfile}{cells}\n')
@@ -512,6 +571,7 @@ def go(args):
     print(f'{good_cells.size} good cells in {len(patch_jobs)} patches')
 
     patch_jobs = select_in_box(args, good_cells, patch_jobs)
+    patch_jobs = select_in_patch_list(args, patch_jobs)
 
     # the selectors work on a plain (tract, patch) array; map back
     # to the grouped jobs afterward
@@ -538,7 +598,9 @@ def go(args):
         print('nothing to do')
         return
 
-    write_script(args.gaia_pattern, mdet=not args.no_mdet)
+    write_script(
+        args.gaia_pattern, args.target_psf, mdet=not args.no_mdet,
+    )
     write_node_jobs(args=args, rng=rng, patch_jobs=patch_jobs)
 
 
@@ -564,6 +626,20 @@ def get_args():
                         metavar=('DECMIN', 'DECMAX'),
                         help='only patches with a good cell whose center '
                              'is in this dec range (degrees)')
+    parser.add_argument('--patch-list',
+                        help='only the patches in this file, one '
+                             '"tract patch [seed]" per line; a seed '
+                             'given there is pinned to the patch (e.g. '
+                             'the seed of an earlier run, for a paired '
+                             'rerun) instead of being drawn')
+    parser.add_argument('--target-psf', type=parse_target_psf,
+                        default='AZGauss',
+                        help='the metacal reconvolution psf, passed to '
+                             'the processing: a class from the metacal '
+                             'package (default AZGauss) or a fixed '
+                             'round gaussian Gauss:<fwhm arcsec>, e.g. '
+                             'Gauss:1.3, which must be larger than any '
+                             'input psf')
     parser.add_argument('--account', default=DEFAULT_ACCOUNT,
                         help='allocation to charge')
     parser.add_argument('--qos', default=DEFAULT_QOS,

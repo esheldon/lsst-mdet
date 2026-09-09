@@ -3,7 +3,6 @@ output file naming and writing
 """
 import numpy as np
 import rustfits
-from .defaults import MIN_GOOD_FRAC
 
 # inspection color image: make-color-image.py rendering at
 # reduced resolution
@@ -123,29 +122,33 @@ def write_output(
     starsub,
     deblend,
     s2_detect,
+    run_options=None,
 ):
-    meta = np.zeros(1, dtype=[
-        ('tract', 'i4'),
-        ('patch', 'i4'),
-        ('seed', 'i8'),
-        ('model', 'U5'),
-        ('with_mdet', bool),
-        ('redo_bg', bool),
-        ('starsub', bool),
-        ('deblend', bool),
-        ('s2_detect', bool),
-        ('min_good_frac', 'f4'),
-    ])
-    meta['tract'] = tract
-    meta['patch'] = patch
-    meta['seed'] = seed
-    meta['with_mdet'] = with_mdet
-    meta['model'] = model
-    meta['redo_bg'] = redo_bg
-    meta['starsub'] = starsub
-    meta['deblend'] = deblend
-    meta['s2_detect'] = s2_detect
-    meta['min_good_frac'] = MIN_GOOD_FRAC
+    """
+    Write the catalog, the meta table and the cell meta.
+
+    The meta table (provenance.make_meta) records the run identity
+    and switches, the remaining process_cells options passed as
+    run_options (repo, collections, patch_dir, gaia_file, gsub,
+    apod_stars, cells), the settings of every processing stage,
+    the package versions, and the date, host and command line.
+    """
+    from .provenance import make_meta
+
+    options = dict(
+        tract=tract,
+        patch=patch,
+        seed=seed,
+        model=model,
+        with_mdet=with_mdet,
+        redo_bg=redo_bg,
+        starsub=starsub,
+        deblend=deblend,
+        s2_detect=s2_detect,
+    )
+    if run_options is not None:
+        options.update(run_options)
+    meta = make_meta(options)
 
     print('writing:', fname)
     with rustfits.FITS(fname, 'w+') as fits:

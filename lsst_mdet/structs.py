@@ -5,10 +5,25 @@ import numpy as np
 from .defaults import NO_ATTEMPT
 
 
-def get_struct(bands, n=1):
+def get_struct(bands, n=1, model=None):
     """
-    Get the output structure, shared by the single-object
-    fitters (am, gauss, wmom) and the kdeblend deblender
+    Get the output structure.
+
+    Shared by the single-object fitters (am, gauss, wmom) and the
+    kdeblend deblender.  The flux_{band} columns hold the model's
+    total flux estimate: the model flux for exp and bdf, the
+    tau-completed total for the ladder, the psf flux for objects
+    the deblender demoted to stars (the DEBLENDED_AS_PSF bit of
+    deblend_flags; the configured model is in the file's meta
+    table).  The colors are the covariance-aware adjacent-band
+    colors of the model fluxes, except for the ladder, where they
+    come from the adaptive-aperture (gauss) fluxes.  With model
+    'ladder' the struct also carries those gauss fluxes and errors
+    and the fixed-minus-adaptive color gradient per adjacent pair
+    with its error; the fixed-aperture fluxes and the rung
+    amplitudes are not kept.  fwhm_smooth is the common smoothing
+    of the cell's deblend (nan for single-object fits), which with
+    the shape columns rebuilds the fitted weight.
 
     Parameters
     ----------
@@ -17,6 +32,9 @@ def get_struct(bands, n=1):
         created for each
     n: int, optional
         The number of rows, default 1
+    model: str, optional
+        The configured fit model; 'ladder' adds the gauss flux and
+        gradient columns
     """
     dtype = [
         ('mcal_step', 'U2'),
@@ -30,6 +48,7 @@ def get_struct(bands, n=1):
         ('group_size', 'i2'),
         ('group_id', 'i4'),
         ('deblend_flags', 'i4'),
+        ('fwhm_smooth', 'f4'),
         ('mfrac', 'f4'),
 
         ('xcell', 'f4'),
@@ -68,6 +87,19 @@ def get_struct(bands, n=1):
             (cname, 'f4'),
             (f'{cname}_err', 'f4'),
         ]
+
+    if model == 'ladder':
+        for band in bands:
+            dtype += [
+                (f'gauss_flux_{band}', 'f4'),
+                (f'gauss_flux_err_{band}', 'f4'),
+            ]
+        for i in range(nband - 1):
+            cname = f'gradient_{bands[i]}m{bands[i + 1]}'
+            dtype += [
+                (cname, 'f4'),
+                (f'{cname}_err', 'f4'),
+            ]
 
     for band in bands:
         dtype += [
@@ -136,8 +168,9 @@ def get_cell_meta(nband, n=1):
     dtype = [
         ('tract', 'i4'),
         ('patch', 'i4'),
-        ('cell_i', 'i4'),
-        ('cell_j', 'i4'),
+        # i2 to match the object catalog cell_i/cell_j
+        ('cell_i', 'i2'),
+        ('cell_j', 'i2'),
         ('good_frac', 'f4', nband),
         ('kept', bool),
     ]

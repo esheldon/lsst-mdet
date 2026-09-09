@@ -1287,9 +1287,23 @@ def field_segmentation(image, good, sig):
 
     imf = np.ascontiguousarray(image, dtype='f4')
 
-    _, seg = sep.extract(
-        imf, 1.5, err=sig, mask=~good, segmentation_map=True,
-    )
+    try:
+        _, seg = sep.extract(
+            imf, 1.5, err=sig, mask=~good, segmentation_map=True,
+        )
+    except Exception as err:
+        if 'deblending overflow' not in str(err):
+            raise
+        # a very bright star's wing above threshold can exceed
+        # the sub-object limit (seen on visit images).  The
+        # map only masks neighbors, so deblending is not needed:
+        # retry with a single deblend threshold (no sub-objects)
+        print('    segmentation deblending overflow; '
+              'retrying without deblending')
+        _, seg = sep.extract(
+            imf, 1.5, err=sig, mask=~good, segmentation_map=True,
+            deblend_nthresh=1, deblend_cont=1.0,
+        )
 
     return seg
 
@@ -1840,7 +1854,7 @@ def preliminary_background(deep_coadd, dstar, dbright):
 
 def handle_stars(
     deep_coadd, wcs, gaia, gsub=GSUB,
-    subtract=True,
+    subtract=True, restore=True,
 ):
     """
     the getimages-time star handling, modifying the image in place
@@ -1862,6 +1876,14 @@ def handle_stars(
     subtract: bool, optional
         False = mask-only handling (no restoration, no
         preliminary background, no subtraction, no table)
+    restore: bool, optional
+        False = skip the object-background restoration around
+        the bright stars and subtract on the delivered
+        object-subtracted image (the 2026-09 dual-state stacks
+        showed restoration re-exposes the unrecoverable initial
+        background pass's over-subtraction trough; see the run
+        notes).  The template amplitudes then anchor on the
+        in-image wings
 
     Returns
     -------
@@ -1891,7 +1913,8 @@ def handle_stars(
                 bright, mask0, verbose=False,
             )
             dbright = ndimage.distance_transform_edt(~bsm)
-            restore_object_background(deep_coadd, dbright)
+            if restore:
+                restore_object_background(deep_coadd, dbright)
         else:
             # no bright stars: nothing to restore, and the
             # pre-pass needs no extra exclusion
