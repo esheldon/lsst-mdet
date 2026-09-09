@@ -55,7 +55,13 @@ def prepare_band_stars(deep_coadd, wcs, gaia, args):
     """
     star_table = None
     dstar = None
-    if gaia is not None:
+    if gaia is not None and args.starsub and args.starsub_method == 'joint':
+        from lsst_starsub.starsub import handle_stars_joint, load_wing
+        wing = load_wing(args.wing_pattern.format(band=deep_coadd.band))
+        _, star_table, dstar = handle_stars_joint(
+            deep_coadd, wcs, gaia, wing, gsub=args.gsub,
+        )
+    elif gaia is not None:
         _, star_table, dstar = handle_stars(
             deep_coadd, wcs, gaia,
             gsub=args.gsub, subtract=args.starsub,
@@ -266,6 +272,18 @@ def get_args():
         default=False,
         help='subtract the Gaia stars (empirical extended '
              'template) before any background determination',
+    )
+    parser.add_argument(
+        '--starsub-method', default='template',
+        choices=['template', 'joint'],
+        help='the star subtraction: this package\'s template route '
+             '(the reference) or the joint star-and-sky fit of '
+             'lsst_starsub (needs --wing-pattern)',
+    )
+    parser.add_argument(
+        '--wing-pattern',
+        help='the per-band wing file for --starsub-method joint, a '
+             'pattern with a {band} placeholder',
     )
     parser.add_argument(
         '--redo-bg', action=argparse.BooleanOptionalAction,

@@ -257,11 +257,15 @@ class ButlerCoadd(object):
 def load_coadds_butler(butler, tract, patch, bands,
                        redo_bg=False, starsub=False,
                        gaia_file=None, gsub=None,
-                       apod_stars=True):
+                       apod_stars=True, starsub_method='template',
+                       wing_pattern=None):
     """
     load the deep coadds for a patch from the butler, with the
     optional star subtraction and background redetermination
-    applied in that order.  The star-region taper uses the
+    applied in that order.  starsub_method 'template' is this
+    package's handle_stars (the reference); 'joint' calls
+    lsst_starsub.starsub.handle_stars_joint with the per-band
+    wing file from wing_pattern ({band} placeholder).  The star-region taper uses the
     union of the per-band star masks, so the attenuation zones
     match across the bands.  Returns
     (coadds, wcs, starmask, star_table, apod, tract_bounds,
@@ -330,10 +334,19 @@ def load_coadds_butler(butler, tract, patch, bands,
             # The taper is further deferred to after this loop:
             # its distance field must be shared across the
             # bands so the attenuation zones match
-            starmask_b, stable_b, dstar = handle_stars(
-                deep_coadd, wcs, gaia, gsub=gsub,
-                subtract=True,
-            )
+            if starsub_method == 'joint':
+                from lsst_starsub.starsub import (
+                    handle_stars_joint, load_wing,
+                )
+                wing = load_wing(wing_pattern.format(band=band))
+                starmask_b, stable_b, dstar = handle_stars_joint(
+                    deep_coadd, wcs, gaia, wing, gsub=gsub,
+                )
+            else:
+                starmask_b, stable_b, dstar = handle_stars(
+                    deep_coadd, wcs, gaia, gsub=gsub,
+                    subtract=True,
+                )
             if star_table is None:
                 # the census is the same in every band up to
                 # per-band saturation details; keep the first

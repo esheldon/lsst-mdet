@@ -85,6 +85,18 @@ def get_parser(per_patch=True):
              '{patch} placeholders, filled in per patch without '
              'zero padding, e.g. /path/{tract}/{patch}/gaia.parq',
     )
+    parser.add_argument(
+        '--starsub-method', default='template',
+        choices=['template', 'joint'],
+        help='the star subtraction: this package\'s template route '
+             '(the reference) or the joint star-and-sky fit of '
+             'lsst_starsub (needs --wing-pattern)',
+    )
+    parser.add_argument(
+        '--wing-pattern',
+        help='the per-band wing file for --starsub-method joint, a '
+             'pattern with a {band} placeholder',
+    )
     parser.add_argument('--deblend', action='store_true')
     parser.add_argument('--s2-detect', action='store_true')
     parser.add_argument(
@@ -343,6 +355,8 @@ def main(
     gaia_file=None,
     gsub=GSUB,
     apod_stars=True,
+    starsub_method='template',
+    wing_pattern=None,
     cells=None,
 ):
     """
@@ -398,6 +412,8 @@ def main(
                 bands=bands, redo_bg=redo_bg, starsub=starsub,
                 gaia_file=gaia_file, gsub=gsub,
                 apod_stars=apod_stars,
+                starsub_method=starsub_method,
+                wing_pattern=wing_pattern,
             )
         del butler
 
@@ -537,6 +553,8 @@ def main(
             gaia_file=gaia_file,
             gsub=gsub,
             apod_stars=apod_stars,
+            starsub_method=starsub_method,
+            wing_pattern=wing_pattern,
             cells=cells,
         ),
     )
@@ -627,6 +645,8 @@ def process_patch(args):
         gaia_file=get_gaia_file(args),
         gsub=args.gsub,
         apod_stars=args.apod_stars,
+        starsub_method=args.starsub_method,
+        wing_pattern=args.wing_pattern,
         cells=args.cells,
     )
 
