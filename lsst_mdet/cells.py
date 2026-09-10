@@ -270,12 +270,14 @@ def load_coadds_butler(butler, tract, patch, bands,
     union of the per-band star masks, so the attenuation zones
     match across the bands.  Returns
     (coadds, wcs, starmask, star_table, apod, tract_bounds,
-    skyvars) with the coadds wrapped for pull_mbobs, the wcs
-    wrapped for the jacobian helper, the star census and taper
-    width for the footprint (None and 0 without starsub), the
-    tract inner sky bounds for the primary cut and the
-    footprint trim, and the per-band sky-variance maps for the
-    pixel weights (None entries without the background redo)
+    skyvars, starsub_fits) with the coadds wrapped for pull_mbobs,
+    the wcs wrapped for the jacobian helper, the star census and
+    taper width for the footprint (None and 0 without starsub),
+    the tract inner sky bounds for the primary cut and the
+    footprint trim, the per-band sky-variance maps for the pixel
+    weights (None entries without the background redo), and for
+    the joint method the per-band fit dicts (band -> fit) for
+    lsst_starsub.starsub.make_fit_tables, else None
     """
     from .background import redo_background
     from .defaults import SKYMAP_VERS
@@ -304,6 +306,7 @@ def load_coadds_butler(butler, tract, patch, bands,
     gaia = None
     dstar_min = None
     star_table = None
+    starsub_fits = None
     skyvars = []
     for band in bands:
         data_id = {
@@ -340,9 +343,12 @@ def load_coadds_butler(butler, tract, patch, bands,
                     handle_stars_joint, load_wing,
                 )
                 wing = load_wing(wing_pattern.format(band=band))
-                starmask_b, stable_b, dstar = handle_stars_joint(
+                starmask_b, stable_b, dstar, fit = handle_stars_joint(
                     deep_coadd, wcs, gaia, wing, gsub=gsub,
                 )
+                if starsub_fits is None:
+                    starsub_fits = {}
+                starsub_fits[band] = fit
             else:
                 starmask_b, stable_b, dstar = handle_stars(
                     deep_coadd, wcs, gaia, gsub=gsub,
@@ -354,8 +360,12 @@ def load_coadds_butler(butler, tract, patch, bands,
                 star_table = stable_b
             skyvar = None
             if redo_bg:
+                # the joint route has fit the sky already; the
+                # redo then only calibrates the noise and makes
+                # the sky-variance map
                 skyvar = redo_background(
                     deep_coadd, starmask=dstar < BG_GROW,
+                    subtract=(starsub_method != 'joint'),
                 )
             # the distance to the union of the per-band star
             # masks is the minimum of the per-band distances
@@ -387,7 +397,7 @@ def load_coadds_butler(butler, tract, patch, bands,
 
     return (
         coadds, wcs, starmask, star_table, apod, tract_bounds,
-        skyvars,
+        skyvars, starsub_fits,
     )
 
 

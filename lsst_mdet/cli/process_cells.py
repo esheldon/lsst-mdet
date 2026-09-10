@@ -394,6 +394,7 @@ def main(
             patch_dir=patch_dir, tract=tract, patch=patch,
             bands=bands,
         )
+        starsub_fits = None
     else:
         if redo_bg is None:
             # match the getimages default: the background is
@@ -407,7 +408,7 @@ def main(
         # it idle for the whole processing stage
         with open_butler(repo, collections=collections) as butler:
             (deep_coadds, wcs, starmask, star_table, apod,
-             tract_bounds, skyvars) = load_coadds_butler(
+             tract_bounds, skyvars, starsub_fits) = load_coadds_butler(
                 butler=butler, tract=tract, patch=patch,
                 bands=bands, redo_bg=redo_bg, starsub=starsub,
                 gaia_file=gaia_file, gsub=gsub,
@@ -533,10 +534,18 @@ def main(
         tract_bounds, st['ra'], st['dec'],
     )
 
+    # the joint star route's fit, as the tables from which the
+    # subtracted sky and star images can be rebuilt
+    starsub_tables = None
+    if starsub_fits is not None:
+        from lsst_starsub.starsub import make_fit_tables
+        starsub_tables = make_fit_tables(starsub_fits)
+
     write_output(
         fname=outfile,
         st=st,
         cell_meta=cell_meta,
+        starsub_tables=starsub_tables,
         tract=tract,
         patch=patch,
         model=model,

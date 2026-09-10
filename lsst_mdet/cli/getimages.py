@@ -58,7 +58,8 @@ def prepare_band_stars(deep_coadd, wcs, gaia, args):
     if gaia is not None and args.starsub and args.starsub_method == 'joint':
         from lsst_starsub.starsub import handle_stars_joint, load_wing
         wing = load_wing(args.wing_pattern.format(band=deep_coadd.band))
-        _, star_table, dstar = handle_stars_joint(
+        # the fit itself is not kept in the patch files
+        _, star_table, dstar, _ = handle_stars_joint(
             deep_coadd, wcs, gaia, wing, gsub=args.gsub,
         )
     elif gaia is not None:
@@ -77,7 +78,12 @@ def prepare_band_stars(deep_coadd, wcs, gaia, args):
         smbg = None
         if dstar is not None:
             smbg = dstar < BG_GROW
-        skyvar = redo_background(deep_coadd, starmask=smbg)
+        # the joint route has fit the sky already; the redo then
+        # only calibrates the noise and makes the sky-variance map
+        joint = args.starsub and args.starsub_method == 'joint'
+        skyvar = redo_background(
+            deep_coadd, starmask=smbg, subtract=not joint,
+        )
     else:
         print('    WARNING: no background redo: diagnostic '
               'mode only; no skyvar extension will be '

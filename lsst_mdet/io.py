@@ -123,6 +123,7 @@ def write_output(
     deblend,
     s2_detect,
     run_options=None,
+    starsub_tables=None,
 ):
     """
     Write the catalog, the meta table and the cell meta.
@@ -132,6 +133,11 @@ def write_output(
     run_options (repo, collections, patch_dir, gaia_file, gsub,
     apod_stars, cells), the settings of every processing stage,
     the package versions, and the date, host and command line.
+
+    starsub_tables, when given, is a dict of extname -> table
+    written after the cell meta: the joint star route's fit
+    (lsst_starsub.starsub.make_fit_tables), from which the
+    subtracted sky and star images can be rebuilt
     """
     from .provenance import make_meta
 
@@ -155,6 +161,9 @@ def write_output(
         fits.write_table(st, extname='cat', compress=True)
         fits.write_table(meta, extname='meta', compress=True)
         fits.write_table(cell_meta, extname='cell_meta', compress=True)
+        if starsub_tables is not None:
+            for extname, table in starsub_tables.items():
+                fits.write_table(table, extname=extname, compress=True)
 
 
 def write_patch_files(
