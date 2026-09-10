@@ -5,7 +5,7 @@ with Gaia-driven bright-star subtraction and masking.
 
 ## Install
 
-    pip install -e .
+    pip install .
 
 ## Requirements
 
@@ -52,31 +52,6 @@ them.  `dev-requirements.txt` adds the test/lint tooling for CI
   `lsst-mdet-process-node` on a list of patches, with the gaia
   stars from the `lsst-mdet-make-gaia` files
 
-## Output catalog
-
-`structs.get_struct` defines the rows.  The `flux_{band}` columns
-are the model's total flux: the model flux for `exp` and `bdf`,
-the tau-completed total for `ladder`, and the psf flux for an
-object the deblender demoted to a star (the `DEBLENDED_AS_PSF` bit
-of `deblend_flags`; the configured model is in the `meta` table).
-The adjacent-band colors and their
-covariance-aware errors come from the model fluxes, except for the
-ladder, whose colors come from its adaptive-aperture (gauss) fluxes,
-the lower-noise and less contaminated estimator.  A ladder catalog
-also carries `gauss_flux_{band}` with errors and the fixed-minus-
-adaptive color gradient `gradient_{b1}m{b2}` with its error; the
-fixed-aperture fluxes and the rung amplitudes are not written.
-`fwhm_smooth` is the common smoothing of the cell's deblend, which
-with the shape columns rebuilds the fitted weight.
-
-The one-row `meta` table (`provenance.make_meta`) records how the
-file was made, as plain columns: the run identity and options
-(tract, patch, seed, model, the switches, repo and collections,
-patch dir, gaia file, gsub, apod_stars, cells), the settings of
-every stage taken from the module constants the code runs with
-(`detect_*`, `mcal_*`, `deblend_*`, `s2_*`, `starsub_*`,
-`mfrac_fwhm`, `apod_rad`, the cell geometry and skymap), the
-`version_*` of each package, and the date, host and command line.
 
 ## Package layout
 
