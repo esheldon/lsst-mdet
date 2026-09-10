@@ -265,7 +265,8 @@ def load_coadds_butler(butler, tract, patch, bands,
     applied in that order.  starsub_method 'template' is this
     package's handle_stars (the reference); 'joint' calls
     lsst_starsub.starsub.handle_stars_joint with the per-band
-    wing file from wing_pattern ({band} placeholder).  The star-region taper uses the
+    wing file from wing_pattern ({band} placeholder).  The
+    star-region taper uses the
     union of the per-band star masks, so the attenuation zones
     match across the bands.  Returns
     (coadds, wcs, starmask, star_table, apod, tract_bounds,
