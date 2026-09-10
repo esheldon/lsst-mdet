@@ -21,6 +21,11 @@ RUWE_MAX = 1.4      # template-star astrometric-quality guard
 BG_GROW = 12        # extra star-mask margin for the background
 APOD_STARS = 12.0   # taper width outside the star mask
 
+# sep's pixel stack for the field segmentation, entries: the
+# start, grown by 4 on overflow up to the maximum
+SEG_PIXSTACK = int(2e6)
+SEG_PIXSTACK_MAX = int(3.2e7)
+
 # empirical extended star template
 TMPL_HALF = 50       # measured stamp half size
 TMPL_OUT_HALF = 250  # minimum halo extension half size
@@ -1282,28 +1287,47 @@ def field_segmentation(image, good, sig):
     """
     import sep
 
-    sep.set_extract_pixstack(int(1.2e7))
-    sep.set_sub_object_limit(10240)
-
     imf = np.ascontiguousarray(image, dtype='f4')
 
+    # sep's pixel stack is process-global and touched in full on
+    # every extract call (41 bytes per entry; the former fixed
+    # 1.2e7 cost 0.5 GB here and on every later sep call in the
+    # process, the per-cell detections included).  Start small,
+    # grow on overflow, and put the previous settings back
+    old_stack = sep.get_extract_pixstack()
+    old_sub = sep.get_sub_object_limit()
+    stack = SEG_PIXSTACK
+    deblend = {}
     try:
-        _, seg = sep.extract(
-            imf, 1.5, err=sig, mask=~good, segmentation_map=True,
-        )
-    except Exception as err:
-        if 'deblending overflow' not in str(err):
-            raise
-        # a very bright star's wing above threshold can exceed
-        # the sub-object limit (seen on visit images).  The
-        # map only masks neighbors, so deblending is not needed:
-        # retry with a single deblend threshold (no sub-objects)
-        print('    segmentation deblending overflow; '
-              'retrying without deblending')
-        _, seg = sep.extract(
-            imf, 1.5, err=sig, mask=~good, segmentation_map=True,
-            deblend_nthresh=1, deblend_cont=1.0,
-        )
+        sep.set_sub_object_limit(10240)
+        while True:
+            sep.set_extract_pixstack(stack)
+            try:
+                _, seg = sep.extract(
+                    imf, 1.5, err=sig, mask=~good, segmentation_map=True,
+                    **deblend,
+                )
+                break
+            except Exception as err:
+                msg = str(err)
+                if 'pixel buffer full' in msg and stack < SEG_PIXSTACK_MAX:
+                    stack *= 4
+                    print(f'    segmentation pixel stack full; '
+                          f'retrying with {stack}')
+                elif 'deblending overflow' in msg and not deblend:
+                    # a very bright star's wing above threshold can
+                    # exceed the sub-object limit (seen on visit
+                    # images).  The map only masks neighbors, so
+                    # deblending is not needed: retry with a single
+                    # deblend threshold (no sub-objects)
+                    print('    segmentation deblending overflow; '
+                          'retrying without deblending')
+                    deblend = dict(deblend_nthresh=1, deblend_cont=1.0)
+                else:
+                    raise
+    finally:
+        sep.set_extract_pixstack(old_stack)
+        sep.set_sub_object_limit(old_sub)
 
     return seg
 
