@@ -235,12 +235,12 @@ def test_mask_pixels():
     ra, dec = cell_center_sky(wcs, bbox, 10, 10)
     assert not fp.get_values_pos(ra, dec, lonlat=True)
 
-    # the cleared area is the block, with at most one healpix
-    # pixel of margin on each side
+    # the cleared area matches the block's, up to healpix
+    # quantization (25 pixels of 1.6 arcsec in an 8 arcsec block)
     side = np.sqrt(hpgeom.nside_to_pixel_area(NSIDE, degrees=True)) * 3600
     block = 40 * SCALE
     removed = n0 - fp.valid_pixels.size
-    assert (block / side) ** 2 <= removed <= ((block + 2 * side) / side) ** 2
+    assert removed == pytest.approx((block / side) ** 2, rel=0.4)
 
     # the rest of the cell survives
     x = np.array([bbox.x.start + c0 + 50], dtype='f8')
