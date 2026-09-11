@@ -82,6 +82,37 @@ def mask_stars_in_footprint(footprint, wcs, bbox, star_table, apod):
         footprint[circle.get_pixels(nside=NSIDE)] = False
 
 
+def mask_pixels_in_footprint(footprint, wcs, bbox, pixmask):
+    """
+    Clear the footprint pixels holding any True pixel of an
+    image-plane mask.  Any masked image pixel clears the footprint
+    pixel containing it; set False directly as in
+    mask_stars_in_footprint
+
+    Parameters
+    ----------
+    footprint: healsparse map
+        The footprint to clear
+    wcs: ButlerWcs or FileWcs
+        For the sky positions of the image pixels
+    bbox: bbox
+        The patch bounding box, tract frame
+    pixmask: bool array
+        The image-plane mask, patch frame
+    """
+    import hpgeom
+
+    iy, ix = np.nonzero(pixmask)
+    if iy.size == 0:
+        return
+    ra, dec = wcs.pixelToSkyArray(
+        (ix + bbox.x.start).astype('f8'),
+        (iy + bbox.y.start).astype('f8'),
+        degrees=True,
+    )
+    footprint[np.unique(hpgeom.angle_to_pixel(NSIDE, ra, dec))] = False
+
+
 def trim_footprint_to_tract_bounds(footprint, tract_bounds):
     """
     Clear footprint pixels whose centers fall outside the

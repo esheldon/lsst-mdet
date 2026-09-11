@@ -2,7 +2,7 @@
 Gaia-driven bright-star subtraction and masking
 """
 import numpy as np
-from .defaults import DM_INTRP, DM_OUT, DM_SAT
+from .defaults import DM_INTRP, DM_NO_DATA, DM_OUT, DM_SAT
 from .gaia import gaia_pixel_positions
 
 # every census star is subtracted with the empirical extended
@@ -295,31 +295,39 @@ def own_component_ids(comps, ix, iy):
     return ids
 
 
-def build_star_mask(stars, mask0, verbose=True):
+def build_star_mask(stars, mask0, verbose=True, coadd=False):
     """
     Get floored magnitude-scaled circles at every census star plus the
-    SAT/INTRP components of the saturated ones
+    flagged components of the saturated ones
 
     Parameters
     ----------
     stars: structured array
         The census from select_stars
     mask0: array
-        The DM mask plane, for the SAT/INTRP components
+        The DM mask plane, for the flagged components
     verbose: bool, optional
         Print the masked fraction
+    coadd: bool, optional
+        True for a coadd: the components are the NO_DATA regions,
+        and every one touching the mask is added.  A coadd carries
+        SAT/INTRP also where other epochs still give usable data;
+        NO_DATA marks where none survived (the coadd interpolates
+        only there).  False for a single exposure: the SAT/INTRP
+        components at the star positions
 
     Returns
     -------
     starmask, comps:
-        The bool star mask and the labeled SAT/INTRP component
-        image (used later for the per-star own-component masks)
+        The bool star mask and the labeled component image (used
+        later for the per-star own-component masks)
     """
     from scipy import ndimage
 
     ny, nx = mask0.shape
 
-    comps, _ = ndimage.label((mask0 & (DM_SAT | DM_INTRP)) != 0)
+    bits = DM_NO_DATA if coadd else (DM_SAT | DM_INTRP)
+    comps, _ = ndimage.label((mask0 & bits) != 0)
 
     starmask = np.zeros((ny, nx), dtype=bool)
     star_ids = set()
@@ -349,6 +357,17 @@ def build_star_mask(stars, mask0, verbose=True):
 
     if star_ids:
         starmask |= np.isin(comps, sorted(star_ids))
+
+    if coadd:
+        # no-data regions reaching past the circles, e.g. diffraction
+        # spikes that rejection removed from every epoch, but not
+        # attached to the star's own component
+        touch = ndimage.binary_dilation(
+            starmask, structure=np.ones((3, 3), dtype=bool),
+        )
+        touch_ids = np.unique(comps[touch & (comps > 0)])
+        if touch_ids.size > 0:
+            starmask |= np.isin(comps, touch_ids)
 
     if verbose:
         print(f'    star mask fraction {starmask.mean():.3f}')
@@ -1924,7 +1943,7 @@ def handle_stars(
     x, y = gaia_pixel_positions(gaia, wcs, deep_coadd.bbox)
 
     stars = select_stars(gaia, x, y, mask0, gsub=gsub)
-    starmask, comps = build_star_mask(stars, mask0)
+    starmask, comps = build_star_mask(stars, mask0, coadd=True)
 
     dstar = ndimage.distance_transform_edt(~starmask)
 
@@ -1934,7 +1953,7 @@ def handle_stars(
 
         if bright.size > 0:
             bsm, _ = build_star_mask(
-                bright, mask0, verbose=False,
+                bright, mask0, verbose=False, coadd=True,
             )
             dbright = ndimage.distance_transform_edt(~bsm)
             if restore:

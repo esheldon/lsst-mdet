@@ -17,10 +17,13 @@ from ..cells import (
     load_coadds_butler, pull_mbobs, get_cell_healsparse_polygon,
     get_tract_primary,
 )
-from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
+from ..defaults import (
+    BUTLER_COLLECTIONS, BUTLER_REPO, DM_NO_DATA, SKYMAP_VERS,
+)
 from ..starsub import GSUB
 from ..hmaps import (
     make_empty_footprint,
+    mask_pixels_in_footprint,
     mask_stars_in_footprint,
     trim_footprint_to_tract_bounds,
 )
@@ -576,6 +579,21 @@ def main(
             star_table=star_table,
             apod=apod,
         )
+
+    # the circles miss the no-data regions folded into the image
+    # star mask, and any no-data left over: clear every pixel the
+    # images carry no signal in
+    unusable = np.zeros(deep_coadds[0].image.array.shape, dtype=bool)
+    for coadd in deep_coadds:
+        unusable |= (coadd.mask.array[:, :, 0] & DM_NO_DATA) != 0
+    if starmask is not None:
+        unusable |= starmask
+    mask_pixels_in_footprint(
+        footprint=footprint,
+        wcs=wcs,
+        bbox=deep_coadds[0].bbox,
+        pixmask=unusable,
+    )
 
     # tracts overlap: trim to the inner boundary, the same
     # test as the is_primary cut
