@@ -254,6 +254,26 @@ class ButlerCoadd(object):
             return None
 
 
+def diffuse_mask(starsub_fits, margin):
+    """
+    the union over the bands of the joint fit's diffuse regions (the
+    large diffuse segments it did not mask as sources, the fit dicts'
+    'diffuse'), grown by margin px; None when there are none
+    """
+    from scipy import ndimage
+
+    masks = [fit['diffuse'] for fit in starsub_fits.values()
+             if fit.get('diffuse') is not None]
+    if not masks:
+        return None
+    union = np.logical_or.reduce(masks)
+    if not union.any():
+        return None
+    if margin > 0:
+        union = ndimage.distance_transform_edt(~union) <= margin
+    return union
+
+
 def load_coadds_butler(butler, tract, patch, bands,
                        redo_bg=False, starsub=False,
                        gaia_file=None, gsub=None,
@@ -277,14 +297,20 @@ def load_coadds_butler(butler, tract, patch, bands,
     footprint trim, the per-band sky-variance maps for the pixel
     weights (None entries without the background redo), and for
     the joint method the per-band fit dicts (band -> fit) for
-    lsst_starsub.starsub.make_fit_tables, else None
+    lsst_starsub.starsub.make_fit_tables, else None.  With the
+    joint method, the returned starmask also includes the large
+    diffuse segments (cirrus) that the sky fit did not mask as
+    sources (lsst_starsub.joint SEG_DIFFUSE_MEDIAN), grown by
+    DIFFUSE_MARGIN px (diffuse_mask).  They are treated like the
+    star zones: zero weight and mfrac 1 in the cells (pull_mbobs),
+    and cleared from the footprint
     """
     from .background import redo_background
     from .defaults import SKYMAP_VERS
     from .gaia import GMAX, fetch_gaia, read_gaia_file
     from .inject import INJECT_SETTINGS, inject_objects, read_truth
     from .starsub import (
-        APOD_STARS, BG_GROW, GSUB, apply_star_taper,
+        APOD_STARS, BG_GROW, DIFFUSE_MARGIN, GSUB, apply_star_taper,
         handle_stars,
     )
     from .wcs import ButlerWcs
@@ -408,6 +434,12 @@ def load_coadds_butler(butler, tract, patch, bands,
             apod = APOD_STARS
         starmask = dstar_min < APOD_STARS
         print(f'union star mask fraction {starmask.mean():.3f}')
+        if starsub_fits is not None:
+            diffuse = diffuse_mask(starsub_fits, DIFFUSE_MARGIN)
+            if diffuse is not None:
+                print(f'diffuse mask fraction {diffuse.mean():.3f} '
+                      f'(grown {DIFFUSE_MARGIN} px)')
+                starmask |= diffuse
 
     return (
         coadds, wcs, starmask, star_table, apod, tract_bounds,

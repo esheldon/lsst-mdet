@@ -20,6 +20,15 @@ GSUB = 19.0         # subtract stars brighter than this
 RUWE_MAX = 1.4      # template-star astrometric-quality guard
 BG_GROW = 12        # extra star-mask margin for the background
 APOD_STARS = 12.0   # taper width outside the star mask
+# px: the large diffuse segments (cirrus) that the joint fit leaves
+# out of its source mask, so that its sky mesh fits them, are masked
+# out to this distance.  Faint objects on the cirrus are biased
+# whatever the sky treatment, and the mesh fitted to it
+# over-subtracts past its edge: faint objects 5-10 percent low in
+# flux at 50-200 px, unbiased by 200-250 px (arm B of
+# run-dp2-test-cirrus-falloff, 2026-09-12).  One node spacing of the
+# mesh (lsst_starsub.joint.SPACING)
+DIFFUSE_MARGIN = 256
 
 # sep's pixel stack for the field segmentation, entries: the
 # start, grown by 4 on overflow up to the maximum
