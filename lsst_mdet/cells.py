@@ -282,6 +282,7 @@ def load_coadds_butler(butler, tract, patch, bands,
     from .background import redo_background
     from .defaults import SKYMAP_VERS
     from .gaia import GMAX, fetch_gaia, read_gaia_file
+    from .inject import INJECT_SETTINGS, inject_objects, read_truth
     from .starsub import (
         APOD_STARS, BG_GROW, GSUB, apply_star_taper,
         handle_stars,
@@ -308,6 +309,7 @@ def load_coadds_butler(butler, tract, patch, bands,
     star_table = None
     starsub_fits = None
     skyvars = []
+    truth = None
     for band in bands:
         data_id = {
             "band": band,
@@ -318,6 +320,18 @@ def load_coadds_butler(butler, tract, patch, bands,
         print(data_id)
         deep_coadd = butler.get('deep_coadd', dataId=data_id)
         deep_coadd.apply_background('object')
+
+        # the object injection test (lsst_mdet.inject, set up by
+        # lsst-mdet-inject-node): the objects go in before any star
+        # or sky processing, so they go through the whole chain.
+        # apply_background adds and subtracts in place, so they
+        # survive the joint route's return to the None state
+        if INJECT_SETTINGS['objects'] is not None:
+            if truth is None:
+                truth = read_truth(INJECT_SETTINGS['objects'].format(
+                    tract=tract, patch=patch,
+                ))
+            inject_objects(deep_coadd, wcs, truth)
 
         if starsub:
             if gaia is None:

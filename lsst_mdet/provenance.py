@@ -17,6 +17,8 @@ STRING_WIDTHS = {
     'patch_dir': 256,
     'gaia_file': 256,
     'cells': 256,
+    'inject_profiles': 256,
+    'inject_objects': 256,
     'command': 1024,
     'hostname': 64,
     'date': 32,
