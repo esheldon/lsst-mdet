@@ -1,7 +1,8 @@
 """
 the keep-footprint machinery: tract bounds and primary cut
 (including RA wrap), cell polygons (including index order),
-star-circle clearing, and the tract trim
+star-circle and image-mask clearing, the coadd star mask's
+no-data extension, and the tract trim
 """
 import os
 
@@ -15,7 +16,7 @@ from lsst_mdet.cells import (
     get_tract_primary,
 )
 from lsst_mdet.defaults import (
-    CELL_OVERLAP_HIGH, CELL_OVERLAP_LOW, CELL_SIZE,
+    CELL_OVERLAP_HIGH, CELL_OVERLAP_LOW, CELL_SIZE, DM_NO_DATA, DM_SAT,
 )
 from lsst_mdet.hmaps import (
     NSIDE,
@@ -23,12 +24,14 @@ from lsst_mdet.hmaps import (
     cat_footprints,
     get_footprint_flist,
     make_empty_footprint,
+    mask_pixels_in_footprint,
     mask_stars_in_footprint,
     trim_footprint_to_tract_bounds,
 )
 from lsst_mdet.patchfiles import FileWcs, SimpleBox
 from lsst_mdet.starsub import (
-    MASK_R15, MASK_RMAX, MINRAD, circle_radius,
+    MASK_R15, MASK_RMAX, MINRAD, _get_select_stars_dtype,
+    build_star_mask, circle_radius,
 )
 
 SCALE = 0.2  # arcsec/pixel
@@ -202,6 +205,80 @@ def test_mask_stars():
     # points beyond the circle (still inside the cell) survive
     assert fp.get_values_pos(sra, sdec + 1.5 * rad_deg, lonlat=True)
     assert fp.get_values_pos(sra, sdec - 1.5 * rad_deg, lonlat=True)
+
+
+def test_mask_pixels():
+    import hpgeom
+
+    wcs, bbox = make_wcs_and_bbox()
+    fp = make_empty_footprint()
+    fp |= get_cell_healsparse_polygon(
+        bbox=bbox, cell_i=10, cell_j=10, wcs=wcs,
+    )
+    n0 = fp.valid_pixels.size
+
+    # an empty mask changes nothing
+    mask_pixels_in_footprint(
+        footprint=fp, wcs=wcs, bbox=bbox,
+        pixmask=np.zeros((NPIX, NPIX), dtype=bool),
+    )
+    assert fp.valid_pixels.size == n0
+
+    # a 40 px (8 arcsec) block at the cell center
+    c0 = int(10.5 * CELL_SIZE)
+    pixmask = np.zeros((NPIX, NPIX), dtype=bool)
+    pixmask[c0 - 20:c0 + 20, c0 - 20:c0 + 20] = True
+    mask_pixels_in_footprint(
+        footprint=fp, wcs=wcs, bbox=bbox, pixmask=pixmask,
+    )
+
+    ra, dec = cell_center_sky(wcs, bbox, 10, 10)
+    assert not fp.get_values_pos(ra, dec, lonlat=True)
+
+    # the cleared area matches the block's, up to healpix
+    # quantization (25 pixels of 1.6 arcsec in an 8 arcsec block)
+    side = np.sqrt(hpgeom.nside_to_pixel_area(NSIDE, degrees=True)) * 3600
+    block = 40 * SCALE
+    removed = n0 - fp.valid_pixels.size
+    assert removed == pytest.approx((block / side) ** 2, rel=0.4)
+
+    # the rest of the cell survives
+    x = np.array([bbox.x.start + c0 + 50], dtype='f8')
+    y = np.array([bbox.y.start + c0], dtype='f8')
+    ra, dec = wcs.pixelToSkyArray(x, y, degrees=True)
+    assert fp.get_values_pos(ra[0], dec[0], lonlat=True)
+
+
+def test_star_mask_coadd_nodata():
+    shape = (400, 400)
+    stars = np.zeros(1, dtype=_get_select_stars_dtype())
+    stars['x'] = 200.0
+    stars['y'] = 200.0
+    stars['G'] = 16.0
+    stars['on_image'] = 1
+    rad = circle_radius(16.0)
+
+    mask0 = np.zeros(shape, dtype='u1')
+    # a no-data strip starting inside the circle, running outward
+    mask0[198:203, 220:320] |= DM_NO_DATA
+    # a detached no-data blob
+    mask0[50:60, 350:360] |= DM_NO_DATA
+    # a saturated-only line through the star, past the circle
+    mask0[100:300, 199:202] |= DM_SAT
+
+    # coadd: the touching no-data joins, the detached blob and the
+    # saturated line beyond the circle do not
+    sm, _ = build_star_mask(stars, mask0, verbose=False, coadd=True)
+    assert sm[200, 200]
+    assert sm[200, 310]
+    assert not sm[55, 355]
+    assert not sm[int(200 - rad - 20), 200]
+
+    # single exposure: the saturated line is the star's own
+    # component, the no-data-only strip is not flagged
+    sm, _ = build_star_mask(stars, mask0, verbose=False, coadd=False)
+    assert sm[int(200 - rad - 20), 200]
+    assert not sm[200, 310]
 
 
 def test_trim_footprint():

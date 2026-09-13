@@ -17,10 +17,13 @@ from ..cells import (
     load_coadds_butler, pull_mbobs, get_cell_healsparse_polygon,
     get_tract_primary,
 )
-from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
+from ..defaults import (
+    BUTLER_COLLECTIONS, BUTLER_REPO, DM_NO_DATA, SKYMAP_VERS,
+)
 from ..starsub import GSUB
 from ..hmaps import (
     make_empty_footprint,
+    mask_pixels_in_footprint,
     mask_stars_in_footprint,
     trim_footprint_to_tract_bounds,
 )
@@ -84,6 +87,18 @@ def get_parser(per_patch=True):
         help='as --gaia-file, but a pattern with {tract} and '
              '{patch} placeholders, filled in per patch without '
              'zero padding, e.g. /path/{tract}/{patch}/gaia.parq',
+    )
+    parser.add_argument(
+        '--starsub-method', default='template',
+        choices=['template', 'joint'],
+        help='the star subtraction: this package\'s template route '
+             '(the reference) or the joint star-and-sky fit of '
+             'lsst_starsub (needs --wing-pattern)',
+    )
+    parser.add_argument(
+        '--wing-pattern',
+        help='the per-band wing file for --starsub-method joint, a '
+             'pattern with a {band} placeholder',
     )
     parser.add_argument('--deblend', action='store_true')
     parser.add_argument('--s2-detect', action='store_true')
@@ -343,6 +358,8 @@ def main(
     gaia_file=None,
     gsub=GSUB,
     apod_stars=True,
+    starsub_method='template',
+    wing_pattern=None,
     cells=None,
 ):
     """
@@ -380,6 +397,7 @@ def main(
             patch_dir=patch_dir, tract=tract, patch=patch,
             bands=bands,
         )
+        starsub_fits = None
     else:
         if redo_bg is None:
             # match the getimages default: the background is
@@ -393,11 +411,13 @@ def main(
         # it idle for the whole processing stage
         with open_butler(repo, collections=collections) as butler:
             (deep_coadds, wcs, starmask, star_table, apod,
-             tract_bounds, skyvars) = load_coadds_butler(
+             tract_bounds, skyvars, starsub_fits) = load_coadds_butler(
                 butler=butler, tract=tract, patch=patch,
                 bands=bands, redo_bg=redo_bg, starsub=starsub,
                 gaia_file=gaia_file, gsub=gsub,
                 apod_stars=apod_stars,
+                starsub_method=starsub_method,
+                wing_pattern=wing_pattern,
             )
         del butler
 
@@ -517,10 +537,18 @@ def main(
         tract_bounds, st['ra'], st['dec'],
     )
 
+    # the joint star route's fit, as the tables from which the
+    # subtracted sky and star images can be rebuilt
+    starsub_tables = None
+    if starsub_fits is not None:
+        from lsst_starsub.starsub import make_fit_tables
+        starsub_tables = make_fit_tables(starsub_fits)
+
     write_output(
         fname=outfile,
         st=st,
         cell_meta=cell_meta,
+        starsub_tables=starsub_tables,
         tract=tract,
         patch=patch,
         model=model,
@@ -537,6 +565,8 @@ def main(
             gaia_file=gaia_file,
             gsub=gsub,
             apod_stars=apod_stars,
+            starsub_method=starsub_method,
+            wing_pattern=wing_pattern,
             cells=cells,
         ),
     )
@@ -549,6 +579,21 @@ def main(
             star_table=star_table,
             apod=apod,
         )
+
+    # the circles miss the no-data regions folded into the image
+    # star mask, and any no-data left over: clear every pixel the
+    # images carry no signal in
+    unusable = np.zeros(deep_coadds[0].image.array.shape, dtype=bool)
+    for coadd in deep_coadds:
+        unusable |= (coadd.mask.array[:, :, 0] & DM_NO_DATA) != 0
+    if starmask is not None:
+        unusable |= starmask
+    mask_pixels_in_footprint(
+        footprint=footprint,
+        wcs=wcs,
+        bbox=deep_coadds[0].bbox,
+        pixmask=unusable,
+    )
 
     # tracts overlap: trim to the inner boundary, the same
     # test as the is_primary cut
@@ -627,6 +672,8 @@ def process_patch(args):
         gaia_file=get_gaia_file(args),
         gsub=args.gsub,
         apod_stars=args.apod_stars,
+        starsub_method=args.starsub_method,
+        wing_pattern=args.wing_pattern,
         cells=args.cells,
     )
 

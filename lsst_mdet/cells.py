@@ -17,7 +17,8 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
     pull a MultiBandObsList from the input deep_coadds for the indicated cell.
 
     The bad pixels (non-finite variance, DM_OUT mask bits, and
-    the star attenuation zone) are unioned across the bands, so
+    the starmask: the star attenuation zone, plus with the joint
+    route the diffuse regions) are unioned across the bands, so
     every band is built on one shared footprint: a pixel with
     good data in only some bands would otherwise feed the joint
     fitting unbalanced information, and can produce zero-variance
@@ -34,7 +35,12 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
         The cell indices
     wcs: DM wcs object
         wcs used for jacobian
-    starmask: bool, optional
+    starmask: bool array, optional
+        Patch-frame mask of the pixels to exclude, from
+        load_coadds_butler: the star attenuation zone, whose image
+        is zeroed and tapered, and with the joint route the grown
+        diffuse regions, whose pixels are left in the image.  Both
+        get zero weight, bmask 1 and mfrac 1
     skyvars: list, optional
         per-band patch-frame sky-variance maps from
         redo_background, used for the pixel weights.  Entries
@@ -83,7 +89,9 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
         if starmask is not None:
             # the star attenuation zone (patch-frame array)
             # carries no usable signal after subtraction and
-            # apodization
+            # apodization.  With the joint route the mask also
+            # covers the diffuse regions (load_coadds_butler),
+            # which keep their pixels and only lose their weight
             good_band &= ~starmask[patch_cut]
 
         # weights come from the sky-variance map when there is
@@ -114,7 +122,7 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
         # every pixel outside the shared footprint is fully
         # masked for selection purposes, matching the cell-edge
         # apodization convention; this includes the star
-        # attenuation zone
+        # attenuation zone and the diffuse regions
         mfrac[~good] = 1.0
         image = deep_coadd.image[bbox].array.copy()
 
@@ -254,29 +262,65 @@ class ButlerCoadd(object):
             return None
 
 
+def diffuse_mask(starsub_fits, margin):
+    """
+    the union over the bands of the joint fit's diffuse regions (the
+    large diffuse segments it did not mask as sources, the fit dicts'
+    'diffuse'), grown by margin px; None when there are none
+    """
+    from scipy import ndimage
+
+    masks = [fit['diffuse'] for fit in starsub_fits.values()
+             if fit.get('diffuse') is not None]
+    if not masks:
+        return None
+    union = np.logical_or.reduce(masks)
+    if not union.any():
+        return None
+    if margin > 0:
+        union = ndimage.distance_transform_edt(~union) <= margin
+    return union
+
+
 def load_coadds_butler(butler, tract, patch, bands,
                        redo_bg=False, starsub=False,
                        gaia_file=None, gsub=None,
-                       apod_stars=True):
+                       apod_stars=True, starsub_method='template',
+                       wing_pattern=None):
     """
     load the deep coadds for a patch from the butler, with the
     optional star subtraction and background redetermination
-    applied in that order.  The star-region taper uses the
+    applied in that order.  starsub_method 'template' is this
+    package's handle_stars (the reference); 'joint' calls
+    lsst_starsub.starsub.handle_stars_joint with the per-band
+    wing file from wing_pattern ({band} placeholder).  The
+    star-region taper uses the
     union of the per-band star masks, so the attenuation zones
     match across the bands.  Returns
     (coadds, wcs, starmask, star_table, apod, tract_bounds,
-    skyvars) with the coadds wrapped for pull_mbobs, the wcs
-    wrapped for the jacobian helper, the star census and taper
-    width for the footprint (None and 0 without starsub), the
-    tract inner sky bounds for the primary cut and the
-    footprint trim, and the per-band sky-variance maps for the
-    pixel weights (None entries without the background redo)
+    skyvars, starsub_fits) with the coadds wrapped for pull_mbobs,
+    the wcs wrapped for the jacobian helper, the star census and
+    taper width for the footprint (None and 0 without starsub),
+    the tract inner sky bounds for the primary cut and the
+    footprint trim, the per-band sky-variance maps for the pixel
+    weights (None entries without the background redo), and for
+    the joint method the per-band fit dicts (band -> fit) for
+    lsst_starsub.starsub.make_fit_tables, else None.  With the
+    joint method, the returned starmask also includes the large
+    diffuse segments (cirrus) that the sky fit did not mask as
+    sources (lsst_starsub.joint SEG_DIFFUSE_MEDIAN), grown by
+    DIFFUSE_MARGIN px (diffuse_mask).  Unlike the star zones, their
+    pixels are left in the image, so no taper is needed: they get
+    zero weight, bmask 1 and mfrac 1 in the cells (pull_mbobs), so
+    detection skips them and objects there fail the mfrac cut, and
+    they are cleared from the footprint
     """
     from .background import redo_background
     from .defaults import SKYMAP_VERS
     from .gaia import GMAX, fetch_gaia, read_gaia_file
+    from .inject import INJECT_SETTINGS, inject_objects, read_truth
     from .starsub import (
-        APOD_STARS, BG_GROW, GSUB, apply_star_taper,
+        APOD_STARS, BG_GROW, DIFFUSE_MARGIN, GSUB, apply_star_taper,
         handle_stars,
     )
     from .wcs import ButlerWcs
@@ -299,7 +343,9 @@ def load_coadds_butler(butler, tract, patch, bands,
     gaia = None
     dstar_min = None
     star_table = None
+    starsub_fits = None
     skyvars = []
+    truth = None
     for band in bands:
         data_id = {
             "band": band,
@@ -310,6 +356,18 @@ def load_coadds_butler(butler, tract, patch, bands,
         print(data_id)
         deep_coadd = butler.get('deep_coadd', dataId=data_id)
         deep_coadd.apply_background('object')
+
+        # the object injection test (lsst_mdet.inject, set up by
+        # lsst-mdet-inject-node): the objects go in before any star
+        # or sky processing, so they go through the whole chain.
+        # apply_background adds and subtracts in place, so they
+        # survive the joint route's return to the None state
+        if INJECT_SETTINGS['objects'] is not None:
+            if truth is None:
+                truth = read_truth(INJECT_SETTINGS['objects'].format(
+                    tract=tract, patch=patch,
+                ))
+            inject_objects(deep_coadd, wcs, truth)
 
         if starsub:
             if gaia is None:
@@ -330,18 +388,34 @@ def load_coadds_butler(butler, tract, patch, bands,
             # The taper is further deferred to after this loop:
             # its distance field must be shared across the
             # bands so the attenuation zones match
-            starmask_b, stable_b, dstar = handle_stars(
-                deep_coadd, wcs, gaia, gsub=gsub,
-                subtract=True,
-            )
+            if starsub_method == 'joint':
+                from lsst_starsub.starsub import (
+                    handle_stars_joint, load_wing,
+                )
+                wing = load_wing(wing_pattern.format(band=band))
+                starmask_b, stable_b, dstar, fit = handle_stars_joint(
+                    deep_coadd, wcs, gaia, wing, gsub=gsub,
+                )
+                if starsub_fits is None:
+                    starsub_fits = {}
+                starsub_fits[band] = fit
+            else:
+                starmask_b, stable_b, dstar = handle_stars(
+                    deep_coadd, wcs, gaia, gsub=gsub,
+                    subtract=True,
+                )
             if star_table is None:
                 # the census is the same in every band up to
                 # per-band saturation details; keep the first
                 star_table = stable_b
             skyvar = None
             if redo_bg:
+                # the joint route has fit the sky already; the
+                # redo then only calibrates the noise and makes
+                # the sky-variance map
                 skyvar = redo_background(
                     deep_coadd, starmask=dstar < BG_GROW,
+                    subtract=(starsub_method != 'joint'),
                 )
             # the distance to the union of the per-band star
             # masks is the minimum of the per-band distances
@@ -370,10 +444,16 @@ def load_coadds_butler(butler, tract, patch, bands,
             apod = APOD_STARS
         starmask = dstar_min < APOD_STARS
         print(f'union star mask fraction {starmask.mean():.3f}')
+        if starsub_fits is not None:
+            diffuse = diffuse_mask(starsub_fits, DIFFUSE_MARGIN)
+            if diffuse is not None:
+                print(f'diffuse mask fraction {diffuse.mean():.3f} '
+                      f'(grown {DIFFUSE_MARGIN} px)')
+                starmask |= diffuse
 
     return (
         coadds, wcs, starmask, star_table, apod, tract_bounds,
-        skyvars,
+        skyvars, starsub_fits,
     )
 
 

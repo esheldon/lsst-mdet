@@ -66,6 +66,7 @@ def get_struct(bands, n=1, model=None):
         ('g1_err', 'f4'),
         ('g2', 'f4'),
         ('g2_err', 'f4'),
+        ('g1g2_cov', 'f4'),
         ('T', 'f4'),
         ('T_err', 'f4'),
     ]

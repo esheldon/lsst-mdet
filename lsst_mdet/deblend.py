@@ -407,17 +407,19 @@ def pack_deblend_object(st, obj_res, bands, jacobian):
     else:
         st['g_flags'] = obj_res['e_flags']
 
-    g1, g2, g1_err, g2_err = _e2g(
+    g1, g2, g1_err, g2_err, g1g2_cov = _e2g(
         e1=obj_res['e1'],
         e2=obj_res['e2'],
         e1_err=obj_res['e1_err'],
         e2_err=obj_res['e2_err'],
+        e1e2_cov=obj_res.get('e1e2_cov', float('nan')),
     )
 
     st['g1'] = g1
     st['g1_err'] = g1_err
     st['g2'] = g2
     st['g2_err'] = g2_err
+    st['g1g2_cov'] = g1g2_cov
     st['T'] = obj_res['T']
     st['T_err'] = obj_res['T_err']
 
@@ -465,12 +467,17 @@ def pack_deblend_object(st, obj_res, bands, jacobian):
     st['y_fit'] = row
 
 
-def _e2g(e1, e2, e1_err, e2_err):
+def _e2g(e1, e2, e1_err, e2_err, e1e2_cov=float('nan')):
     """
     convert distortion-convention shapes to reduced shear,
-    g = e / (1 + sqrt(1 - e^2)), with diagonal error propagation.
-    The deblender guarantees e^2 < 1 for usable shapes (the det
-    condition); the clip only guards float rounding at the boundary
+    g = e / (1 + sqrt(1 - e^2)), propagating the shape covariance
+    through the jacobian.  The deblender guarantees e^2 < 1 for
+    usable shapes (the det condition); the clip only guards float
+    rounding at the boundary.
+
+    Returns g1, g2, g1_err, g2_err, g1g2_cov.  A non-finite
+    e1e2_cov contributes nothing to the errors and gives a nan
+    g1g2_cov
     """
     import numpy as np
 
@@ -486,18 +493,29 @@ def _e2g(e1, e2, e1_err, e2_err):
             fp = 1.0 / (2 * s * (1.0 + s) ** 2)
         else:
             fp = 0.0
+        j11 = f + 2 * e1 * e1 * fp
+        j12 = 2 * e1 * e2 * fp
+        j21 = j12
+        j22 = f + 2 * e2 * e2 * fp
+
+        c11 = e1_err ** 2
+        c22 = e2_err ** 2
+        c12 = e1e2_cov if np.isfinite(e1e2_cov) else 0.0
+
         g1_err = np.sqrt(
-            (f + 2 * e1 * e1 * fp) ** 2 * e1_err ** 2
-            + (2 * e1 * e2 * fp) ** 2 * e2_err ** 2
+            j11 ** 2 * c11 + j12 ** 2 * c22 + 2 * j11 * j12 * c12
         )
         g2_err = np.sqrt(
-            (2 * e1 * e2 * fp) ** 2 * e1_err ** 2
-            + (f + 2 * e2 * e2 * fp) ** 2 * e2_err ** 2
+            j21 ** 2 * c11 + j22 ** 2 * c22 + 2 * j21 * j22 * c12
+        )
+        g1g2_cov = (
+            j11 * j21 * c11 + j12 * j22 * c22
+            + (j11 * j22 + j12 * j21) * e1e2_cov
         )
     else:
-        g1, g2, g1_err, g2_err = [np.nan] * 4
+        g1, g2, g1_err, g2_err, g1g2_cov = [np.nan] * 5
 
-    return g1, g2, g1_err, g2_err
+    return g1, g2, g1_err, g2_err, g1g2_cov
 
 
 def show_group(

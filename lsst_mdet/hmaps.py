@@ -82,6 +82,41 @@ def mask_stars_in_footprint(footprint, wcs, bbox, star_table, apod):
         footprint[circle.get_pixels(nside=NSIDE)] = False
 
 
+def mask_pixels_in_footprint(footprint, wcs, bbox, pixmask):
+    """
+    Clear the footprint pixels whose centers fall on True pixels of an
+    image-plane mask, the same center test as the tract trim.  Clearing
+    a footprint pixel for any masked image pixel inside it instead
+    widens every hole by up to a footprint pixel (1.6 arcsec), which
+    over a patch of small star holes doubles the cleared area
+
+    Parameters
+    ----------
+    footprint: healsparse map
+        The footprint to clear
+    wcs: ButlerWcs or FileWcs
+        For the image positions of the footprint pixels
+    bbox: bbox
+        The patch bounding box, tract frame
+    pixmask: bool array
+        The image-plane mask, patch frame
+    """
+    import hpgeom
+
+    vp = footprint.valid_pixels
+    if vp.size == 0 or not pixmask.any():
+        return
+    ra, dec = hpgeom.pixel_to_angle(NSIDE, vp)
+    x, y = wcs.skyToPixelArray(ra, dec, degrees=True)
+    ix = np.round(np.asarray(x) - bbox.x.start).astype(int)
+    iy = np.round(np.asarray(y) - bbox.y.start).astype(int)
+    ny, nx = pixmask.shape
+    inside = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny)
+    hit = np.zeros(vp.size, dtype=bool)
+    hit[inside] = pixmask[iy[inside], ix[inside]]
+    footprint[vp[hit]] = False
+
+
 def trim_footprint_to_tract_bounds(footprint, tract_bounds):
     """
     Clear footprint pixels whose centers fall outside the

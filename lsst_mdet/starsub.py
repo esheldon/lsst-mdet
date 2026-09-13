@@ -2,7 +2,7 @@
 Gaia-driven bright-star subtraction and masking
 """
 import numpy as np
-from .defaults import DM_INTRP, DM_OUT, DM_SAT
+from .defaults import DM_INTRP, DM_NO_DATA, DM_OUT, DM_SAT
 from .gaia import gaia_pixel_positions
 
 # every census star is subtracted with the empirical extended
@@ -20,6 +20,20 @@ GSUB = 19.0         # subtract stars brighter than this
 RUWE_MAX = 1.4      # template-star astrometric-quality guard
 BG_GROW = 12        # extra star-mask margin for the background
 APOD_STARS = 12.0   # taper width outside the star mask
+# px: the large diffuse segments (cirrus) that the joint fit leaves
+# out of its source mask, so that its sky mesh fits them, are masked
+# out to this distance.  Faint objects on the cirrus are biased
+# whatever the sky treatment, and the mesh fitted to it
+# over-subtracts past its edge: faint objects 5-10 percent low in
+# flux at 50-200 px, unbiased by 200-250 px (arm B of
+# run-dp2-test-cirrus-falloff, 2026-09-12).  One node spacing of the
+# mesh (lsst_starsub.joint.SPACING)
+DIFFUSE_MARGIN = 256
+
+# sep's pixel stack for the field segmentation, entries: the
+# start, grown by 4 on overflow up to the maximum
+SEG_PIXSTACK = int(2e6)
+SEG_PIXSTACK_MAX = int(3.2e7)
 
 # empirical extended star template
 TMPL_HALF = 50       # measured stamp half size
@@ -290,31 +304,39 @@ def own_component_ids(comps, ix, iy):
     return ids
 
 
-def build_star_mask(stars, mask0, verbose=True):
+def build_star_mask(stars, mask0, verbose=True, coadd=False):
     """
     Get floored magnitude-scaled circles at every census star plus the
-    SAT/INTRP components of the saturated ones
+    flagged components of the saturated ones
 
     Parameters
     ----------
     stars: structured array
         The census from select_stars
     mask0: array
-        The DM mask plane, for the SAT/INTRP components
+        The DM mask plane, for the flagged components
     verbose: bool, optional
         Print the masked fraction
+    coadd: bool, optional
+        True for a coadd: the components are the NO_DATA regions,
+        and every one touching the mask is added.  A coadd carries
+        SAT/INTRP also where other epochs still give usable data;
+        NO_DATA marks where none survived (the coadd interpolates
+        only there).  False for a single exposure: the SAT/INTRP
+        components at the star positions
 
     Returns
     -------
     starmask, comps:
-        The bool star mask and the labeled SAT/INTRP component
-        image (used later for the per-star own-component masks)
+        The bool star mask and the labeled component image (used
+        later for the per-star own-component masks)
     """
     from scipy import ndimage
 
     ny, nx = mask0.shape
 
-    comps, _ = ndimage.label((mask0 & (DM_SAT | DM_INTRP)) != 0)
+    bits = DM_NO_DATA if coadd else (DM_SAT | DM_INTRP)
+    comps, _ = ndimage.label((mask0 & bits) != 0)
 
     starmask = np.zeros((ny, nx), dtype=bool)
     star_ids = set()
@@ -344,6 +366,17 @@ def build_star_mask(stars, mask0, verbose=True):
 
     if star_ids:
         starmask |= np.isin(comps, sorted(star_ids))
+
+    if coadd:
+        # no-data regions reaching past the circles, e.g. diffraction
+        # spikes that rejection removed from every epoch, but not
+        # attached to the star's own component
+        touch = ndimage.binary_dilation(
+            starmask, structure=np.ones((3, 3), dtype=bool),
+        )
+        touch_ids = np.unique(comps[touch & (comps > 0)])
+        if touch_ids.size > 0:
+            starmask |= np.isin(comps, touch_ids)
 
     if verbose:
         print(f'    star mask fraction {starmask.mean():.3f}')
@@ -1282,28 +1315,47 @@ def field_segmentation(image, good, sig):
     """
     import sep
 
-    sep.set_extract_pixstack(int(1.2e7))
-    sep.set_sub_object_limit(10240)
-
     imf = np.ascontiguousarray(image, dtype='f4')
 
+    # sep's pixel stack is process-global and touched in full on
+    # every extract call (41 bytes per entry; the former fixed
+    # 1.2e7 cost 0.5 GB here and on every later sep call in the
+    # process, the per-cell detections included).  Start small,
+    # grow on overflow, and put the previous settings back
+    old_stack = sep.get_extract_pixstack()
+    old_sub = sep.get_sub_object_limit()
+    stack = SEG_PIXSTACK
+    deblend = {}
     try:
-        _, seg = sep.extract(
-            imf, 1.5, err=sig, mask=~good, segmentation_map=True,
-        )
-    except Exception as err:
-        if 'deblending overflow' not in str(err):
-            raise
-        # a very bright star's wing above threshold can exceed
-        # the sub-object limit (seen on visit images).  The
-        # map only masks neighbors, so deblending is not needed:
-        # retry with a single deblend threshold (no sub-objects)
-        print('    segmentation deblending overflow; '
-              'retrying without deblending')
-        _, seg = sep.extract(
-            imf, 1.5, err=sig, mask=~good, segmentation_map=True,
-            deblend_nthresh=1, deblend_cont=1.0,
-        )
+        sep.set_sub_object_limit(10240)
+        while True:
+            sep.set_extract_pixstack(stack)
+            try:
+                _, seg = sep.extract(
+                    imf, 1.5, err=sig, mask=~good, segmentation_map=True,
+                    **deblend,
+                )
+                break
+            except Exception as err:
+                msg = str(err)
+                if 'pixel buffer full' in msg and stack < SEG_PIXSTACK_MAX:
+                    stack *= 4
+                    print(f'    segmentation pixel stack full; '
+                          f'retrying with {stack}')
+                elif 'deblending overflow' in msg and not deblend:
+                    # a very bright star's wing above threshold can
+                    # exceed the sub-object limit (seen on visit
+                    # images).  The map only masks neighbors, so
+                    # deblending is not needed: retry with a single
+                    # deblend threshold (no sub-objects)
+                    print('    segmentation deblending overflow; '
+                          'retrying without deblending')
+                    deblend = dict(deblend_nthresh=1, deblend_cont=1.0)
+                else:
+                    raise
+    finally:
+        sep.set_extract_pixstack(old_stack)
+        sep.set_sub_object_limit(old_sub)
 
     return seg
 
@@ -1900,7 +1952,7 @@ def handle_stars(
     x, y = gaia_pixel_positions(gaia, wcs, deep_coadd.bbox)
 
     stars = select_stars(gaia, x, y, mask0, gsub=gsub)
-    starmask, comps = build_star_mask(stars, mask0)
+    starmask, comps = build_star_mask(stars, mask0, coadd=True)
 
     dstar = ndimage.distance_transform_edt(~starmask)
 
@@ -1910,7 +1962,7 @@ def handle_stars(
 
         if bright.size > 0:
             bsm, _ = build_star_mask(
-                bright, mask0, verbose=False,
+                bright, mask0, verbose=False, coadd=True,
             )
             dbright = ndimage.distance_transform_edt(~bsm)
             if restore:
