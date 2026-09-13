@@ -17,7 +17,8 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
     pull a MultiBandObsList from the input deep_coadds for the indicated cell.
 
     The bad pixels (non-finite variance, DM_OUT mask bits, and
-    the star attenuation zone) are unioned across the bands, so
+    the starmask: the star attenuation zone, plus with the joint
+    route the diffuse regions) are unioned across the bands, so
     every band is built on one shared footprint: a pixel with
     good data in only some bands would otherwise feed the joint
     fitting unbalanced information, and can produce zero-variance
@@ -34,7 +35,12 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
         The cell indices
     wcs: DM wcs object
         wcs used for jacobian
-    starmask: bool, optional
+    starmask: bool array, optional
+        Patch-frame mask of the pixels to exclude, from
+        load_coadds_butler: the star attenuation zone, whose image
+        is zeroed and tapered, and with the joint route the grown
+        diffuse regions, whose pixels are left in the image.  Both
+        get zero weight, bmask 1 and mfrac 1
     skyvars: list, optional
         per-band patch-frame sky-variance maps from
         redo_background, used for the pixel weights.  Entries
@@ -116,7 +122,7 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
         # every pixel outside the shared footprint is fully
         # masked for selection purposes, matching the cell-edge
         # apodization convention; this includes the star
-        # attenuation zone
+        # attenuation zone and the diffuse regions
         mfrac[~good] = 1.0
         image = deep_coadd.image[bbox].array.copy()
 
