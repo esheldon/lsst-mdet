@@ -372,6 +372,13 @@ def load_coadds_butler(butler, tract, patch, bands,
         if starsub:
             if gaia is None:
                 gmax = max(gsub, GMAX)
+                if starsub_method == 'joint':
+                    # the joint route also subtracts the wings of the
+                    # stars below the census, down to lsst_starsub's
+                    # WING_GMAX
+                    from lsst_starsub.starsub import WING_GMAX
+                    if WING_GMAX is not None:
+                        gmax = max(gmax, WING_GMAX)
                 if gaia_file is not None:
                     gaia = read_gaia_file(
                         gaia_file, wcs, deep_coadd.bbox,
