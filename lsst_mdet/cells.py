@@ -83,7 +83,9 @@ def pull_mbobs(deep_coadds, cell_i, cell_j, wcs, starmask=None,
         if starmask is not None:
             # the star attenuation zone (patch-frame array)
             # carries no usable signal after subtraction and
-            # apodization
+            # apodization.  With the joint route the mask also
+            # covers the diffuse regions (load_coadds_butler),
+            # which keep their pixels and only lose their weight
             good_band &= ~starmask[patch_cut]
 
         # weights come from the sky-variance map when there is
@@ -301,9 +303,11 @@ def load_coadds_butler(butler, tract, patch, bands,
     joint method, the returned starmask also includes the large
     diffuse segments (cirrus) that the sky fit did not mask as
     sources (lsst_starsub.joint SEG_DIFFUSE_MEDIAN), grown by
-    DIFFUSE_MARGIN px (diffuse_mask).  They are treated like the
-    star zones: zero weight and mfrac 1 in the cells (pull_mbobs),
-    and cleared from the footprint
+    DIFFUSE_MARGIN px (diffuse_mask).  Unlike the star zones, their
+    pixels are left in the image, so no taper is needed: they get
+    zero weight, bmask 1 and mfrac 1 in the cells (pull_mbobs), so
+    detection skips them and objects there fail the mfrac cut, and
+    they are cleared from the footprint
     """
     from .background import redo_background
     from .defaults import SKYMAP_VERS
