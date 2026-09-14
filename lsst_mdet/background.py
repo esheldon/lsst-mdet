@@ -5,7 +5,7 @@ import numpy as np
 from .defaults import DM_OUT
 
 
-def redo_background(deep_coadd, starmask=None):
+def redo_background(deep_coadd, starmask=None, subtract=True):
     """
     redo the background determination on the image, in place,
     and calibrate the noise realization to the measured sky
@@ -17,6 +17,12 @@ def redo_background(deep_coadd, starmask=None):
     object poisson term, and is the plane the pixel weights
     should be built from (the variance plane includes the
     objects' poisson noise, making weights signal-dependent)
+
+    With subtract=False the background is measured but not
+    subtracted: the noise calibration and the sky-variance map
+    are still made.  For an image whose sky is already fit,
+    e.g. by the lsst_starsub joint fit of the stars and the sky,
+    whose deep source mask this 64 px background would undo
     """
     import sep
 
@@ -65,7 +71,11 @@ def redo_background(deep_coadd, starmask=None):
 
         image -= bkg.back()
 
-    image[:, :] -= bkg.back()
+    if subtract:
+        image[:, :] -= bkg.back()
+    else:
+        print(f'    band: {deep_coadd.band} background measured, '
+              f'not subtracted (globalback {bkg.globalback:+.3f})')
 
     w = np.where(new_good)
     medvar = np.median(var[w])

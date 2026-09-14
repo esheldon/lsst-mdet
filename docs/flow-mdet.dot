@@ -1,0 +1,119 @@
+// the lsst-mdet pipeline as run in production with the joint star
+// and sky model (run.sh: --starsub --starsub-method joint --redo-bg
+// --model exp --deblend --mdet --target-psf AZGauss): the setup
+// products, the per-patch processing on whole nodes, the per-cell
+// measurement, the per-patch outputs and the run-level products and
+// tests.  The star and sky step itself is lsst-starsub's
+// docs/flow-joint.dot
+// render: dot -Tpdf docs/flow-mdet.dot -o flow-mdet.pdf
+//         dot -Tpng -Gdpi=110 docs/flow-mdet.dot -o flow-mdet.png
+digraph lsst_mdet {
+    rankdir = TB;
+    newrank = true;
+    fontname = "Helvetica";
+    node [shape=box, style="rounded,filled", fontname="Helvetica",
+          fontsize=11, fillcolor="#f4f4f4", color="#666666"];
+    edge [fontname="Helvetica", fontsize=9, color="#444444"];
+
+    // ------------------------------------------------------------
+    subgraph cluster_setup {
+        label = "Setup (once per run)";
+        style = "rounded";
+        color = "#999999";
+        fontsize = 12;
+        node [fillcolor="#e8eef8"];
+        goodcells [label="good-cells file: every cell whose 8 neighbors\nand itself have >= 3 epochs in every band\n[lsst-mdet-make-good-cells]"];
+        gaia [label="per-tract Gaia DR3 files to G 21,\ntracts at |b| < 20 deg skipped\n[lsst-starsub-make-gaia]"];
+        wing [label="canonical wing per band\n(lsst-starsub, flow-joint.dot A)"];
+        slurm [label="whole-node slurm jobs: patches packed into\njob lists (seed tract patch outfile [cells]),\none node runs lsst-mdet-process-node\n[lsst-mdet-make-slurm-nersc]"];
+        goodcells -> slurm;
+    }
+
+    // ------------------------------------------------------------
+    subgraph cluster_patch {
+        label = "A. Per patch (lsst-mdet-process-cells, forked by process-node)";
+        style = "rounded";
+        color = "#5a7aa8";
+        fontsize = 12;
+        node [fillcolor="#e2e9f4"];
+        load [label="butler: deep_coadd cell coadd per band (r, i, z),\nobject background applied; the butler is closed\nright after the load\n[cells.load_coadds_butler]"];
+        starsub [label="joint star and sky model per band\n(lsst_starsub.coadd.starsub.handle_stars_joint):\nsky mesh and star model subtracted,\nfaint-star wings to G 21 subtracted"];
+        redo [label="--redo-bg with the joint route: the 64 px sky\nis measured but not subtracted; it calibrates\nthe noise realization and gives the sky-variance\nmap for the pixel weights [background.redo_background]"];
+        masks [label="one mask for all bands: star zones (min-over-band\ndstar) tapered to zero over 12 px, plus the diffuse\n(cirrus) zones grown 256 px, pixels kept"];
+        load -> starsub -> redo -> masks;
+    }
+
+    // ------------------------------------------------------------
+    subgraph cluster_cell {
+        label = "B. Per cell (20 x 20 cells of 150 px, 50 px overlap; pipeline.py)";
+        style = "rounded";
+        color = "#8a5a9a";
+        fontsize = 12;
+        node [fillcolor="#efe3f3"];
+        pull [label="mbobs: per band image, weight from the sky-variance\nmap, noise realization, psf at the cell center, mfrac;\nbad pixels and the mask unioned across bands into one\nfootprint; cell kept if > 20 percent good;\ncell-edge apodization [cells.pull_mbobs]"];
+        mcal [label="metacal per band: noshear, 1p, 1m; reconvolved\nto the round Gaussian target psf (AZGauss);\nthe noise field through the same operations,\nweights calibrated to the kernel-scale noise\n[metacal.do_all_metacal]"];
+        detect [label="per step: weighted mean coadd over bands\nfor detection; sep with the 0.8 arcsec kernel,\nthreshold 0.8, minarea 4 [coadd.coadd_mbobs, detect.run_sep]"];
+        psf [label="target-psf fit per band (admom)\n[psf.fit_and_set_mcal_psfs]"];
+        deblend [label="kdeblend: seg-touching and moment-relevance groups\nfit jointly per band with the exp model, recentered,\nfull errors; fluxes, colors, sizes, shapes\n[deblend.fit_deblend]"];
+        post [label="per row: mfrac from the smoothed masked-fraction\nmap (1.2 arcsec), is_primary in the inner cell,\nthe original psf shape (psfrec), ra/dec"];
+        pull -> mcal -> detect -> psf -> deblend -> post;
+    }
+
+    // ------------------------------------------------------------
+    subgraph cluster_out {
+        label = "C. Per-patch outputs";
+        style = "rounded";
+        color = "#b0743a";
+        fontsize = 12;
+        node [fillcolor="#f8ecdc"];
+        cat [label="{tract}-{patch}-mdet.fits: the catalog (one row per\nobject and metacal step), is_primary also within the\ntract inner bounds; the meta table (every setting,\nversions, command line); the cell table; the starsub\nstars / sky / wing tables (the fit, rebuildable)\n[io.write_output, provenance.make_meta]"];
+        fp [label="footprint .hsp: the union of the processed cells'\ninner polygons, star circles + taper cleared,\nno-data and diffuse pixels cleared, trimmed to the\ntract inner bounds [hmaps]"];
+        qa [label="color jpg of the final masked images\n(non-footprint tinted); stacked star-residual\nprofiles png [io.write_color_image, qa]"];
+        cat -> fp -> qa [style=invis];
+    }
+
+    // ------------------------------------------------------------
+    subgraph cluster_run {
+        label = "D. Run-level products";
+        style = "rounded";
+        color = "#7a9a5a";
+        fontsize = 12;
+        node [fillcolor="#eaf3df"];
+        runfp [label="run footprint: the union of the patch footprints,\nstreamed one coverage pixel at a time\n[lsst-mdet-make-footprint, -plot-footprint]"];
+        excl [label="star exclusion map: masked stars to the mask\nradius + taper + 4 arcsec, unmasked stars 6 arcsec\n[lsst-mdet-make-star-exclusion]"];
+        stats [label="selection (stats/sums_config.yaml: primary, flags 0,\nmfrac <= 0.1, g_flags 0, colors, psfrec_gmax, s2n, Tratio),\nper-chunk sums on a node, then the binned null tests\nwith bootstrap errors and plots\n[lsst-mdet-make-slurm-stats, -dosums, -dostats, -plotstats]"];
+        maps [label="sky maps of g1/R, g2/R, density, psf quantities\nas healsparse maps and pngs\n[lsst-mdet-make-map, -view-map]"];
+        corr [label="correlation catalogs: the galaxy sample with weights\nand the global R, the Gaia stars in the footprint\n[lsst-mdet-make-corr-cats]"];
+        starcorr [label="gamma_t around stars by G bin (treecorr NG, random-\ncompensated, jackknife) and the Landy-Szalay source\ncounts, which we prefer flat [lsst-mdet-starcorr]"];
+        runfp -> excl -> corr -> starcorr;
+        runfp -> maps;
+    }
+
+    // ------------------------------------------------------------
+    subgraph cluster_inject {
+        label = "Injection tests (lsst-mdet-inject-node, production seeds)";
+        style = "rounded,dashed";
+        color = "#999999";
+        fontsize = 12;
+        node [fillcolor="#ffffff", style="rounded,filled,dashed"];
+        inj [label="objects (galaxies and point sources from truth\ntables) added to the coadds as loaded, before the star\nand sky step; or residual halos around the census stars;\nthe outputs pair object-by-object with production"];
+    }
+
+    // ------------------------------------------------------------
+    // the data flow
+    slurm -> load;
+    gaia -> starsub [label="G < 21"];
+    wing -> starsub;
+    masks -> pull;
+    post -> cat;
+    post -> fp [label="cell polygons"];
+    masks -> fp [label="mask"];
+    cat -> stats;
+    cat -> maps;
+    cat -> corr;
+    fp -> runfp;
+    gaia -> excl [constraint=false];
+    gaia -> corr [constraint=false];
+    inj -> load [style=dashed, constraint=false];
+    cat -> inj [style=dashed, label="paired", constraint=false];
+}

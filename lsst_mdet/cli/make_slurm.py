@@ -40,7 +40,7 @@ export OMP_NUM_THREADS=1
     --redo-bg \
     --model exp \
     --deblend \
-    --starsub \
+    --starsub%(extra)s \
     --outfile ${outfile} \
     --mdet ${cells}
 """
@@ -120,14 +120,18 @@ def format_cells(cells):
     return ' ' + ' '.join(f'{i},{j}' for i, j in cells)
 
 
-def write_script():
+def write_script(extra=''):
+    """
+    Write run.sh, with any extra process-cells options appended.
+    """
     import os
 
     fname = 'run.sh'
 
     print('writing:', fname)
+    text = SCRIPT % {'extra': (' \\\n    ' + extra) if extra else ''}
     with open(fname, 'w') as fobj:
-        fobj.write(SCRIPT)
+        fobj.write(text)
 
     os.system('chmod 755 %s' % fname)
 
@@ -217,13 +221,18 @@ def go(args):
     patch_jobs = group_cells_by_patch(good_cells)
     print(f'{good_cells.size} good cells in {len(patch_jobs)} patches')
 
+    if args.tracts is not None:
+        keep = set(args.tracts)
+        patch_jobs = [j for j in patch_jobs if j['tract'] in keep]
+        print(f'{len(patch_jobs)} patches in tracts {sorted(keep)}')
+
     if args.njobs is not None:
         ri = rng.choice(
             len(patch_jobs), size=args.njobs, replace=False,
         )
         patch_jobs = [patch_jobs[i] for i in sorted(ri)]
 
-    write_script()
+    write_script(extra=args.extra_args)
 
     write_slurm(args=args, rng=rng, patch_jobs=patch_jobs)
 
@@ -241,6 +250,12 @@ def get_args():
                              'patches, chosen at random')
     parser.add_argument('--walltime', default='03:00:00',
                         help=('walltime for each job, e.g. 01:00:00'))
+    parser.add_argument('--tracts', type=int, nargs='+',
+                        help='only these tracts of the good-cells file')
+    parser.add_argument('--extra-args', default='',
+                        help='options appended to the process-cells '
+                             'command in run.sh, e.g. "--gaia-pattern '
+                             '... --starsub-method joint --wing-pattern ..."')
 
     return parser.parse_args()
 

@@ -6,8 +6,10 @@ the file does not carry, proper motions when it does
 import numpy as np
 import pytest
 
-from lsst_mdet.gaia import (
-    GMAX, gaia_from_columns, gaia_pixel_positions,
+from lsst_starsub.gaia import (
+    GMAX,
+    gaia_from_columns,
+    gaia_pixel_positions,
     read_gaia_file,
 )
 
@@ -114,7 +116,7 @@ def test_read_gaia_parquet(tmp_path):
 
 
 def test_read_gaia_fits(tmp_path):
-    # the lsst-mdet-make-gaia layout: TAP column names and
+    # the lsst-starsub-make-gaia layout: TAP column names and
     # proper motions, which move the pixel positions
     rustfits = pytest.importorskip('rustfits')
 

@@ -46,7 +46,7 @@ def measure_stacked_star_residuals(coadd, star_table, starmask):
     list of dicts, one per brightness bin, with keys
     gmin, gmax, nstars, rmid, stacked, err
     """
-    from .starsub import circle_radius, field_segmentation
+    from lsst_starsub.census import circle_radius, field_segmentation
 
     image = coadd.image.array
     var = coadd.variance.array

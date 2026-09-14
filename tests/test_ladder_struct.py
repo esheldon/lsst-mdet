@@ -151,7 +151,8 @@ def test_meta_records_provenance(tmp_path):
     as plain columns
     """
     import rustfits
-    from lsst_mdet import defaults, detect, metacal, starsub
+    from lsst_mdet import defaults, detect, metacal
+    from lsst_starsub import census as starsub
     from lsst_mdet.deblend import DEBLEND_SETTINGS
     from lsst_mdet.io import write_output
     from lsst_mdet.structs import get_cell_meta

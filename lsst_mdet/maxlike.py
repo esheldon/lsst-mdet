@@ -102,6 +102,7 @@ def fit_ml(st, model, rng, mbobs):
         st['g1_err'] = res['g_err'][0]
         st['g2'] = res['g'][1]
         st['g2_err'] = res['g_err'][1]
+        st['g1g2_cov'] = res['g_cov'][0, 1]
         st['T'] = res['T']
         st['T_err'] = res['T_err']
         set_fluxes(

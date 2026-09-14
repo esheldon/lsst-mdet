@@ -26,15 +26,23 @@ be changed on a submitted array with
 
     scontrol update jobid=<id> arraytaskthrottle=<n>
 
-The gaia stars come from per-tract files made by lsst-mdet-make-gaia,
+The star subtraction is the template route unless --starsub-method
+joint is given with --wing-pattern, the per-band canonical wing
+files (lsst_starsub); the wing pattern is not used otherwise.
+
+The gaia stars come from per-tract files made by lsst-starsub-make-gaia,
 see --gaia-pattern.  Tracts at low galactic latitude are left out as
-in lsst-mdet-make-gaia (--min-abs-b) and listed in low-latitude.txt;
+in lsst-starsub-make-gaia (--min-abs-b) and listed in low-latitude.txt;
 patches with no gaia file are left out and listed in missing-gaia.txt
 """
 import os
 
 from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
-from .make_gaia import DEFAULT_MIN_ABS_B, GAIA_PATTERN, select_high_latitude
+from lsst_starsub.cli.make_gaia import (
+    DEFAULT_MIN_ABS_B,
+    GAIA_PATTERN,
+    select_high_latitude,
+)
 from .process_cells import parse_target_psf
 from .make_slurm import (
     MAX_SEED,
@@ -45,7 +53,8 @@ from .make_slurm import (
 )
 
 # perlmutter cpu nodes have 128 physical cores (256 hyperthreads) and
-# about 500 GB of memory; a patch needs about 1.5 GB
+# about 500 GB of memory; a patch needs about 1.5 GB for starsub
+# "template" and 2.0 for "joint"
 DEFAULT_NPROC = 128
 DEFAULT_WALLTIME = '03:00:00'
 DEFAULT_QOS = 'regular'
@@ -88,7 +97,7 @@ lsst-mdet-process-node \
     --redo-bg \
     --model exp \
     --deblend \
-    --starsub%(mdet)s
+    --starsub%(starsub)s%(mdet)s
 """
 
 SLURM_TEMPLATE = r'''#!/bin/bash
@@ -150,7 +159,55 @@ DEFAULT_MEM_PER_PATCH_GB = 4
 SHARED_MAX_NPROC = 64
 
 
-def write_script(gaia_pattern, target_psf, mdet=True):
+def get_starsub_options(starsub_method, wing_pattern):
+    """
+    The star subtraction options for run.sh.
+
+    The template method is the process-cells default and needs no
+    option.  The joint method (the lsst_starsub joint fit) is passed
+    with its per-band wing file pattern.
+
+    Parameters
+    ----------
+    starsub_method: str
+        'template' or 'joint'
+    wing_pattern: str or None
+        The --wing-pattern for the joint method, with a {band}
+        placeholder; ignored for the template method
+
+    Returns
+    -------
+    str
+        The option text, empty for the template method
+    """
+    if starsub_method == 'template':
+        return ''
+    return (
+        f' \\\n    --starsub-method {starsub_method}'
+        f" \\\n    --wing-pattern '{wing_pattern}'"
+    )
+
+
+def write_script(
+    gaia_pattern, target_psf, mdet=True, starsub_method='template',
+    wing_pattern=None,
+):
+    """
+    Write run.sh.
+
+    Parameters
+    ----------
+    gaia_pattern: str
+        The --gaia-pattern for the processing
+    target_psf: str
+        The --target-psf for the processing
+    mdet: bool
+        Whether to pass --mdet
+    starsub_method: str
+        'template' or 'joint', see get_starsub_options
+    wing_pattern: str or None
+        The wing file pattern for the joint method
+    """
     fname = 'run.sh'
 
     print('writing:', fname)
@@ -159,6 +216,7 @@ def write_script(gaia_pattern, target_psf, mdet=True):
             'gaia_pattern': gaia_pattern,
             'target_psf': target_psf,
             'start_interval': DEFAULT_START_INTERVAL,
+            'starsub': get_starsub_options(starsub_method, wing_pattern),
             'mdet': ' \\\n    --mdet' if mdet else '',
         })
 
@@ -600,6 +658,8 @@ def go(args):
 
     write_script(
         args.gaia_pattern, args.target_psf, mdet=not args.no_mdet,
+        starsub_method=args.starsub_method,
+        wing_pattern=args.wing_pattern,
     )
     write_node_jobs(args=args, rng=rng, patch_jobs=patch_jobs)
 
@@ -694,14 +754,26 @@ def get_args():
                               'them, and a node of small patches several '
                               'per core; e.g. 52000 at nproc 128 is one '
                               'full patch per core')
+    parser.add_argument('--starsub-method', default='template',
+                        choices=['template', 'joint'],
+                        help='star subtraction in the processing: the '
+                             'stamp-template route (default) or '
+                             'the joint fit of star '
+                             'amplitudes and sky, which needs '
+                             '--wing-pattern')
+    parser.add_argument('--wing-pattern',
+                        help='the per-band canonical wing file for '
+                             '--starsub-method joint, with a {band} '
+                             'placeholder; ignored for the template '
+                             'method')
     parser.add_argument('--gaia-pattern', default=GAIA_PATTERN,
                         help='gaia file pattern with {tract} and '
                              'optionally {patch} placeholders; default '
-                             'is the lsst-mdet-make-gaia output')
+                             'is the lsst-starsub-make-gaia output')
     parser.add_argument('--min-abs-b', type=float, default=DEFAULT_MIN_ABS_B,
                         help='leave out tracts with center galactic '
                              'latitude |b| below this, in degrees, as '
-                             'lsst-mdet-make-gaia does; 0 to keep all')
+                             'lsst-starsub-make-gaia does; 0 to keep all')
     parser.add_argument('--repo', default=BUTLER_REPO,
                         help='butler repo, for the skymap')
     parser.add_argument('--collections', nargs='+',
@@ -713,6 +785,10 @@ def get_args():
         parser.error('--nproc must be >= 1')
     if args.throttle < 1:
         parser.error('--throttle must be >= 1')
+    if args.starsub_method == 'joint' and args.wing_pattern is None:
+        parser.error('--starsub-method joint needs --wing-pattern')
+    if args.starsub_method == 'joint' and '{band}' not in args.wing_pattern:
+        parser.error('--wing-pattern needs a {band} placeholder')
     if args.qos == 'shared' and args.nproc > SHARED_MAX_NPROC:
         parser.error(f'--nproc on the shared QOS is at most '
                      f'{SHARED_MAX_NPROC} (half a node)')

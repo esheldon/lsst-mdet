@@ -17,6 +17,8 @@ STRING_WIDTHS = {
     'patch_dir': 256,
     'gaia_file': 256,
     'cells': 256,
+    'inject_profiles': 256,
+    'inject_objects': 256,
     'command': 1024,
     'hostname': 64,
     'date': 32,
@@ -27,8 +29,8 @@ DEFAULT_STRING_WIDTH = 32
 # and its k-space fitter, the metacal operator, the detector, the
 # grouper, this package and numpy
 VERSION_PACKAGES = (
-    'lsst_mdet', 'kdeblend', 'ngmix', 'metacal', 'sep', 'sxdes',
-    'fofx', 'numpy',
+    'lsst_mdet', 'lsst_starsub', 'kdeblend', 'ngmix', 'metacal', 'sep',
+    'sxdes', 'fofx', 'numpy',
 )
 
 
@@ -69,8 +71,10 @@ def settings_entries():
     Taken from the module constants at call time, so the record
     cannot drift from what ran.
     """
+    from lsst_starsub import census, joint, stamps
+    from lsst_starsub.coadd import starsub
     from . import defaults, detect, metacal, deblend, extra_detect
-    from . import starsub, mfrac, apodize, inject
+    from . import mfrac, apodize, inject
 
     entries = []
 
@@ -98,13 +102,34 @@ def settings_entries():
         ('apod_rad', apodize.AP_RAD),
     ]
     entries += [
-        ('starsub_' + name.lower(), getattr(starsub, name))
+        ('starsub_' + name.lower(),
+         getattr(census if hasattr(census, name) else stamps, name))
         for name in STARSUB_NAMES
+    ]
+    entries += [
+        ('joint_' + name.lower(), getattr(joint, name))
+        for name in JOINT_NAMES
+    ]
+    entries += [
+        ('joint_' + name.lower(), getattr(starsub, name))
+        for name in JOINT_WING_NAMES
     ]
     return entries
 
 
-# the star subtraction and masking constants (see starsub.py)
+# the joint star-and-sky fit (lsst_starsub.joint) and its subtraction of
+# the fainter stars' wings (lsst_starsub.coadd.starsub)
+JOINT_NAMES = (
+    'BIN', 'SPACING', 'GFIT', 'EPS', 'MIN_CELL_FRAC', 'NPASS', 'SEG_GROW',
+    'SEG_BIG_NPIX', 'SEG_BIG_K', 'SEG_BIG_RMAX', 'MESH_SMOOTH_DELTA',
+    'SEG_DIFFUSE_MEDIAN', 'SEG_DIFFUSE_BW', 'PRIOR_SIGMA',
+)
+JOINT_WING_NAMES = (
+    'WING_GMAX', 'WING_RIN', 'WING_ROUT', 'WING_CORE_RAP', 'WING_AMP_RANGE',
+)
+
+# the star census, masking and stamp-template constants
+# (lsst_starsub.census and lsst_starsub.stamps)
 STARSUB_NAMES = (
     'MASK_SLOPE', 'MASK_RMAX', 'MINRAD', 'STAR_MARGIN', 'GSAT', 'GSUB',
     'RUWE_MAX', 'BG_GROW', 'APOD_STARS',
