@@ -6,22 +6,23 @@ redetermination
 import os
 import numpy as np
 from lsst.daf.butler import Butler
-
-from ..background import redo_background
-from ..cells import get_cell_centers, get_tract_bounds, make_psf_cube
-from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
-from ..gaia import GMAX, fetch_gaia_or_none, read_gaia_file
-from ..io import write_patch_files
-from ..patchfiles import get_patch_filename
-from ..starsub import (
+from lsst_starsub.census import (
     APOD_STARS,
     BG_GROW,
     GSUB,
     MINRAD,
     apply_star_taper,
-    handle_stars,
     make_starmask_plane,
 )
+from lsst_starsub.gaia import GMAX, fetch_gaia_or_none, read_gaia_file
+from lsst_starsub.stamps import handle_stars
+
+from ..background import redo_background
+from ..cells import get_cell_centers, get_tract_bounds, make_psf_cube
+from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
+from ..detect import DETECT_SETTINGS
+from ..io import write_patch_files
+from ..patchfiles import get_patch_filename
 from ..wcs import get_wcs_header
 
 
@@ -61,6 +62,7 @@ def prepare_band_stars(deep_coadd, wcs, gaia, args):
         # the fit itself is not kept in the patch files
         _, star_table, dstar, _ = handle_stars_joint(
             deep_coadd, wcs, gaia, wing, gsub=args.gsub,
+            detect_settings=DETECT_SETTINGS,
         )
     elif gaia is not None:
         _, star_table, dstar = handle_stars(
@@ -282,9 +284,10 @@ def get_args():
     parser.add_argument(
         '--starsub-method', default='template',
         choices=['template', 'joint'],
-        help='the star subtraction: this package\'s template route '
-             '(the reference) or the joint star-and-sky fit of '
-             'lsst_starsub (needs --wing-pattern)',
+        help='the star subtraction: the stamp-template route '
+             '(lsst_starsub.stamps, the reference) or the joint '
+             'star-and-sky fit (lsst_starsub.starsub, needs '
+             '--wing-pattern)',
     )
     parser.add_argument(
         '--wing-pattern',

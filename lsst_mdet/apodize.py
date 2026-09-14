@@ -78,27 +78,6 @@ def get_ap_range():
     return int(6 * AP_RAD + 0.5)
 
 
-def taper_from_distance(dist, width):
-    """
-    smooth taper as a function of distance into valid territory:
-    0 at dist=0, 1 at dist >= width, using the same cumulative
-    triweight kernel as the cell-edge apodization so star masks
-    and cell edges share one smoothness class
-    """
-    y = (np.asarray(dist, dtype=float) - width) * (6.0 / width) + 3
-    out = np.where(y > 3, 1.0, 0.0)
-    w = (y >= -3) & (y <= 3)
-    yy = y[w]
-    out[w] = (
-        -5 * yy ** 7 / 69984
-        + 7 * yy ** 5 / 2592
-        - 35 * yy ** 3 / 864
-        + 35 * yy / 96
-        + 1 / 2
-    )
-    return out
-
-
 @njit
 def _ap_kern_kern(x, m, h):
     # cumulative triweight kernel

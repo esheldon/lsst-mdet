@@ -30,15 +30,17 @@ The star subtraction is the template route unless --starsub-method
 joint is given with --wing-pattern, the per-band canonical wing
 files (lsst_starsub); the wing pattern is not used otherwise.
 
-The gaia stars come from per-tract files made by lsst-mdet-make-gaia,
+The gaia stars come from per-tract files made by lsst-starsub-make-gaia,
 see --gaia-pattern.  Tracts at low galactic latitude are left out as
-in lsst-mdet-make-gaia (--min-abs-b) and listed in low-latitude.txt;
+in lsst-starsub-make-gaia (--min-abs-b) and listed in low-latitude.txt;
 patches with no gaia file are left out and listed in missing-gaia.txt
 """
 import os
 
 from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
-from .make_gaia import DEFAULT_MIN_ABS_B, GAIA_PATTERN, select_high_latitude
+from lsst_starsub.cli.make_gaia import (
+    DEFAULT_MIN_ABS_B, GAIA_PATTERN, select_high_latitude,
+)
 from .process_cells import parse_target_psf
 from .make_slurm import (
     MAX_SEED,
@@ -753,8 +755,8 @@ def get_args():
     parser.add_argument('--starsub-method', default='template',
                         choices=['template', 'joint'],
                         help='star subtraction in the processing: the '
-                             'lsst_mdet template route (default) or '
-                             'the lsst_starsub joint fit of star '
+                             'stamp-template route (default) or '
+                             'the joint fit of star '
                              'amplitudes and sky, which needs '
                              '--wing-pattern')
     parser.add_argument('--wing-pattern',
@@ -765,11 +767,11 @@ def get_args():
     parser.add_argument('--gaia-pattern', default=GAIA_PATTERN,
                         help='gaia file pattern with {tract} and '
                              'optionally {patch} placeholders; default '
-                             'is the lsst-mdet-make-gaia output')
+                             'is the lsst-starsub-make-gaia output')
     parser.add_argument('--min-abs-b', type=float, default=DEFAULT_MIN_ABS_B,
                         help='leave out tracts with center galactic '
                              'latitude |b| below this, in degrees, as '
-                             'lsst-mdet-make-gaia does; 0 to keep all')
+                             'lsst-starsub-make-gaia does; 0 to keep all')
     parser.add_argument('--repo', default=BUTLER_REPO,
                         help='butler repo, for the skymap')
     parser.add_argument('--collections', nargs='+',

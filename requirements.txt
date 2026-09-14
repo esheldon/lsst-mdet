@@ -19,5 +19,6 @@ healsparse
 # (install from source; see README):
 #   metacal
 #   kdeblend
+#   lsst_starsub (the star code, github.com/esheldon/lsst-starsub)
 # The LSST science pipelines are required only for
 # lsst_mdet.cells, lsst_mdet.wcs and the cli tools

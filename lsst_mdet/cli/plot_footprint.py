@@ -13,7 +13,7 @@ import os
 
 import numpy as np
 
-from .make_gaia import DEFAULT_MIN_ABS_B
+from lsst_starsub.cli.make_gaia import DEFAULT_MIN_ABS_B
 
 DEFAULT_XSIZE = 2000
 DEFAULT_DPI = 150

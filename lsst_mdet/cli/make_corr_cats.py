@@ -217,7 +217,7 @@ def go(args):
 
 def get_args():
     import argparse
-    from .make_gaia import GAIA_PATTERN
+    from lsst_starsub.cli.make_gaia import GAIA_PATTERN
 
     parser = argparse.ArgumentParser(
         description=__doc__,

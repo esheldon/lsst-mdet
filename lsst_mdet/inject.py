@@ -106,7 +106,7 @@ def inject_residual_halos(coadds, star_table, profile_file,
     -------
     the number of (star, band) injections
     """
-    from .starsub import circle_radius
+    from lsst_starsub.census import circle_radius
 
     profs, dmcen = load_profiles(profile_file)
     rmax_dm = float(dmcen[-1]) + 8.0

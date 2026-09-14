@@ -60,7 +60,7 @@ def mask_stars_in_footprint(footprint, wcs, bbox, star_table, apod):
         radii
     """
     import healsparse
-    from .starsub import circle_radius
+    from lsst_starsub.census import circle_radius
 
     scale = get_pixel_scale(
         wcs,
@@ -176,7 +176,7 @@ def star_exclusion_radii(gmag, boundary=EXCLUSION_BOUNDARY,
                          faint_radius=EXCLUSION_FAINT_RADIUS):
     """
     the star exclusion radius in degrees: for masked stars
-    (G < starsub GSUB) the mask radius law plus the taper width,
+    (G < census GSUB) the mask radius law plus the taper width,
     at the nominal 0.2 arcsec pixel scale, plus the boundary;
     for fainter (unmasked) stars the fixed faint radius
 
@@ -193,7 +193,7 @@ def star_exclusion_radii(gmag, boundary=EXCLUSION_BOUNDARY,
     -------
     radius in degrees, same shape as gmag
     """
-    from .starsub import circle_radius, APOD_STARS, GSUB
+    from lsst_starsub.census import APOD_STARS, GSUB, circle_radius
     rad_arcsec = np.where(
         np.asarray(gmag) < GSUB,
         (circle_radius(gmag) + APOD_STARS) * 0.2 + boundary,

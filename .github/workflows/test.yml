@@ -62,6 +62,10 @@ jobs:
           python -m pip install --no-deps \
             git+https://github.com/esheldon/kdeblend.git
 
+          # the star code; not yet packaged, install from github
+          python -m pip install --no-deps \
+            git+https://github.com/esheldon/lsst-starsub.git
+
           python -m pip install --no-deps -e .
 
       - name: lint

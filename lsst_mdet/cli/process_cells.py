@@ -12,6 +12,8 @@ process that imports everything once and then forks workers:
     process_patch(args): run one patch from a parsed namespace
 """
 import numpy as np
+from lsst_starsub.census import GSUB
+
 from ..apodize import apodize_mbobs
 from ..cells import (
     load_coadds_butler, pull_mbobs, get_cell_healsparse_polygon,
@@ -20,7 +22,6 @@ from ..cells import (
 from ..defaults import (
     BUTLER_COLLECTIONS, BUTLER_REPO, DM_NO_DATA, SKYMAP_VERS,
 )
-from ..starsub import GSUB
 from ..hmaps import (
     make_empty_footprint,
     mask_pixels_in_footprint,
@@ -91,9 +92,10 @@ def get_parser(per_patch=True):
     parser.add_argument(
         '--starsub-method', default='template',
         choices=['template', 'joint'],
-        help='the star subtraction: this package\'s template route '
-             '(the reference) or the joint star-and-sky fit of '
-             'lsst_starsub (needs --wing-pattern)',
+        help='the star subtraction: the stamp-template route '
+             '(lsst_starsub.stamps, the reference) or the joint '
+             'star-and-sky fit (lsst_starsub.starsub, needs '
+             '--wing-pattern)',
     )
     parser.add_argument(
         '--wing-pattern',
@@ -232,6 +234,13 @@ def preload(
     # the direct lazy imports in the package, and what those pull
     # in at first use
     from .. import background  # noqa
+    import lsst_starsub.census  # noqa
+    import lsst_starsub.gaia  # noqa
+    import lsst_starsub.joint  # noqa
+    import lsst_starsub.stamps  # noqa
+    import lsst_starsub.starsub  # noqa
+    import lsst_starsub.visit  # noqa
+    import lsst_starsub.wing  # noqa
     import ngmix  # noqa
     import ngmix.moments  # noqa
     import ngmix.prepsfadmom.prep  # noqa
