@@ -85,36 +85,6 @@ def test_positions_roundtrip():
     assert y[0] == pytest.approx(NPIX / 2, abs=1e-6)
 
 
-def test_read_gaia_parquet(tmp_path):
-    pd = pytest.importorskip('pandas')
-
-    wcs, bbox, ra, dec, gmag, _, _ = make_columns()
-    fname = str(tmp_path / 'gaia.parquet')
-    # extra columns, as in a general matched catalog, are
-    # ignored; gaia_g_mag is the matched-catalog name for G
-    df = pd.DataFrame({
-        'ra': ra,
-        'dec': dec,
-        'gaia_g_mag': gmag,
-        'other': np.arange(ra.size),
-    })
-    try:
-        df.to_parquet(fname)
-    except ImportError:
-        pytest.skip('no parquet engine')
-
-    gaia = read_gaia_file(fname, wcs, bbox)
-    expected = gaia_from_columns(
-        ra=ra, dec=dec, gmag=gmag, wcs=wcs, bbox=bbox,
-    )
-    assert np.array_equal(gaia, expected)
-    assert gaia.dtype == expected.dtype
-
-    # the gmax passthrough
-    gaia = read_gaia_file(fname, wcs, bbox, gmax=30.0)
-    assert gaia.size == 3
-
-
 def test_read_gaia_fits(tmp_path):
     # the lsst-starsub-make-gaia layout: TAP column names and
     # proper motions, which move the pixel positions

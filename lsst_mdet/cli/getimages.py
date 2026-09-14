@@ -307,8 +307,8 @@ def get_args():
     )
     parser.add_argument(
         '--gaia-file',
-        help='read the gaia stars from this parquet file '
-             '(columns gaia_g_mag, ra, dec) instead of the '
+        help='read the gaia stars from this FITS file '
+             '(the lsst-starsub-make-gaia layout) instead of the '
              'TAP query',
     )
     parser.add_argument(
