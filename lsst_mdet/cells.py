@@ -272,7 +272,7 @@ def load_coadds_butler(butler, tract, patch, bands,
     optional star subtraction and background redetermination
     applied in that order.  starsub_method 'template' is
     lsst_starsub.stamps.handle_stars (the reference); 'joint' calls
-    lsst_starsub.starsub.handle_stars_joint with the per-band
+    lsst_starsub.coadd.starsub.handle_stars_joint with the per-band
     wing file from wing_pattern ({band} placeholder).  The
     star-region taper uses the
     union of the per-band star masks, so the attenuation zones
@@ -285,7 +285,7 @@ def load_coadds_butler(butler, tract, patch, bands,
     footprint trim, the per-band sky-variance maps for the pixel
     weights (None entries without the background redo), and for
     the joint method the per-band fit dicts (band -> fit) for
-    lsst_starsub.starsub.make_fit_tables, else None.  With the
+    lsst_starsub.coadd.starsub.make_fit_tables, else None.  With the
     joint method, the returned starmask also includes the large
     diffuse segments (cirrus) that the sky fit did not mask as
     sources (lsst_starsub.joint SEG_DIFFUSE_MEDIAN), grown by
@@ -298,7 +298,11 @@ def load_coadds_butler(butler, tract, patch, bands,
     from .background import redo_background
     from .defaults import SKYMAP_VERS
     from lsst_starsub.census import (
-        APOD_STARS, BG_GROW, DIFFUSE_MARGIN, GSUB, apply_star_taper,
+        APOD_STARS,
+        BG_GROW,
+        DIFFUSE_MARGIN,
+        GSUB,
+        apply_star_taper,
         diffuse_mask,
     )
     from lsst_starsub.gaia import GMAX, fetch_gaia, read_gaia_file
@@ -358,7 +362,7 @@ def load_coadds_butler(butler, tract, patch, bands,
                     # the joint route also subtracts the wings of the
                     # stars below the census, down to lsst_starsub's
                     # WING_GMAX
-                    from lsst_starsub.starsub import WING_GMAX
+                    from lsst_starsub.coadd.starsub import WING_GMAX
                     if WING_GMAX is not None:
                         gmax = max(gmax, WING_GMAX)
                 if gaia_file is not None:
@@ -378,8 +382,9 @@ def load_coadds_butler(butler, tract, patch, bands,
             # its distance field must be shared across the
             # bands so the attenuation zones match
             if starsub_method == 'joint':
-                from lsst_starsub.starsub import (
-                    handle_stars_joint, load_wing,
+                from lsst_starsub.coadd.starsub import (
+                    handle_stars_joint,
+                    load_wing,
                 )
                 wing = load_wing(wing_pattern.format(band=band))
                 starmask_b, stable_b, dstar, fit = handle_stars_joint(

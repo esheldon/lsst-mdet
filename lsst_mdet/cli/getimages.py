@@ -57,7 +57,7 @@ def prepare_band_stars(deep_coadd, wcs, gaia, args):
     star_table = None
     dstar = None
     if gaia is not None and args.starsub and args.starsub_method == 'joint':
-        from lsst_starsub.starsub import handle_stars_joint, load_wing
+        from lsst_starsub.coadd.starsub import handle_stars_joint, load_wing
         wing = load_wing(args.wing_pattern.format(band=deep_coadd.band))
         # the fit itself is not kept in the patch files
         _, star_table, dstar, _ = handle_stars_joint(
@@ -286,7 +286,7 @@ def get_args():
         choices=['template', 'joint'],
         help='the star subtraction: the stamp-template route '
              '(lsst_starsub.stamps, the reference) or the joint '
-             'star-and-sky fit (lsst_starsub.starsub, needs '
+             'star-and-sky fit (lsst_starsub.coadd.starsub, needs '
              '--wing-pattern)',
     )
     parser.add_argument(

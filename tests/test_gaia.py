@@ -7,7 +7,9 @@ import numpy as np
 import pytest
 
 from lsst_starsub.gaia import (
-    GMAX, gaia_from_columns, gaia_pixel_positions,
+    GMAX,
+    gaia_from_columns,
+    gaia_pixel_positions,
     read_gaia_file,
 )
 

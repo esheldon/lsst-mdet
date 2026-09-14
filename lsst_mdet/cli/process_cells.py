@@ -94,7 +94,7 @@ def get_parser(per_patch=True):
         choices=['template', 'joint'],
         help='the star subtraction: the stamp-template route '
              '(lsst_starsub.stamps, the reference) or the joint '
-             'star-and-sky fit (lsst_starsub.starsub, needs '
+             'star-and-sky fit (lsst_starsub.coadd.starsub, needs '
              '--wing-pattern)',
     )
     parser.add_argument(
@@ -238,8 +238,8 @@ def preload(
     import lsst_starsub.gaia  # noqa
     import lsst_starsub.joint  # noqa
     import lsst_starsub.stamps  # noqa
-    import lsst_starsub.starsub  # noqa
-    import lsst_starsub.visit  # noqa
+    import lsst_starsub.coadd.starsub  # noqa
+    import lsst_starsub.visit.exposure  # noqa
     import lsst_starsub.wing  # noqa
     import ngmix  # noqa
     import ngmix.moments  # noqa
@@ -550,7 +550,7 @@ def main(
     # subtracted sky and star images can be rebuilt
     starsub_tables = None
     if starsub_fits is not None:
-        from lsst_starsub.starsub import make_fit_tables
+        from lsst_starsub.coadd.starsub import make_fit_tables
         starsub_tables = make_fit_tables(starsub_fits)
 
     write_output(

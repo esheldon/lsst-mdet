@@ -39,7 +39,9 @@ import os
 
 from ..defaults import BUTLER_COLLECTIONS, BUTLER_REPO, SKYMAP_VERS
 from lsst_starsub.cli.make_gaia import (
-    DEFAULT_MIN_ABS_B, GAIA_PATTERN, select_high_latitude,
+    DEFAULT_MIN_ABS_B,
+    GAIA_PATTERN,
+    select_high_latitude,
 )
 from .process_cells import parse_target_psf
 from .make_slurm import (

@@ -30,8 +30,12 @@ from lsst_mdet.hmaps import (
 )
 from lsst_mdet.patchfiles import FileWcs, SimpleBox
 from lsst_starsub.census import (
-    MASK_R15, MASK_RMAX, MINRAD, _get_select_stars_dtype,
-    build_star_mask, circle_radius,
+    MASK_R15,
+    MASK_RMAX,
+    MINRAD,
+    _get_select_stars_dtype,
+    build_star_mask,
+    circle_radius,
 )
 
 SCALE = 0.2  # arcsec/pixel

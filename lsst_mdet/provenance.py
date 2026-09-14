@@ -71,7 +71,8 @@ def settings_entries():
     Taken from the module constants at call time, so the record
     cannot drift from what ran.
     """
-    from lsst_starsub import census, joint, stamps, starsub
+    from lsst_starsub import census, joint, stamps
+    from lsst_starsub.coadd import starsub
     from . import defaults, detect, metacal, deblend, extra_detect
     from . import mfrac, apodize, inject
 
@@ -117,7 +118,7 @@ def settings_entries():
 
 
 # the joint star-and-sky fit (lsst_starsub.joint) and its subtraction of
-# the fainter stars' wings (lsst_starsub.starsub)
+# the fainter stars' wings (lsst_starsub.coadd.starsub)
 JOINT_NAMES = (
     'BIN', 'SPACING', 'GFIT', 'EPS', 'MIN_CELL_FRAC', 'NPASS', 'SEG_GROW',
     'SEG_BIG_NPIX', 'SEG_BIG_K', 'SEG_BIG_RMAX', 'MESH_SMOOTH_DELTA',

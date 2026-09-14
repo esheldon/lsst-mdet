@@ -136,7 +136,7 @@ def write_output(
 
     starsub_tables, when given, is a dict of extname -> table
     written after the cell meta: the joint star route's fit
-    (lsst_starsub.starsub.make_fit_tables), from which the
+    (lsst_starsub.coadd.starsub.make_fit_tables), from which the
     subtracted sky and star images can be rebuilt
     """
     from .provenance import make_meta
