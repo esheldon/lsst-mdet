@@ -79,15 +79,15 @@ def get_parser(per_patch=True):
     gaia = parser.add_mutually_exclusive_group()
     gaia.add_argument(
         '--gaia-file',
-        help='read the gaia stars from this parquet file '
-             '(columns gaia_g_mag, ra, dec) instead of the '
+        help='read the gaia stars from this FITS file '
+             '(the lsst-starsub-make-gaia layout) instead of the '
              'TAP query (butler mode with --starsub only)',
     )
     gaia.add_argument(
         '--gaia-pattern',
         help='as --gaia-file, but a pattern with {tract} and '
              '{patch} placeholders, filled in per patch without '
-             'zero padding, e.g. /path/{tract}/{patch}/gaia.parq',
+             'zero padding, e.g. /path/gaia-dr3-{tract:05d}.fits',
     )
     parser.add_argument(
         '--starsub-method', default='template',
@@ -258,7 +258,6 @@ def preload(
     import threadpoolctl  # noqa
     import healsparse  # noqa
     import hpgeom  # noqa
-    import pandas  # noqa
     import tqdm  # noqa
     import matplotlib
     matplotlib.use('Agg')
