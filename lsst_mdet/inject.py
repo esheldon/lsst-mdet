@@ -15,7 +15,7 @@ pixels.
 Objects: exponential galaxies and point sources from a per-patch
 truth table, rendered with the coadd psf and added to the coadds as
 loaded, before any star or sky processing, so they go through the
-whole chain (the recovery of fluxes and colours under diffuse
+whole chain (the recovery of fluxes and colors under diffuse
 emission such as cirrus).
 """
 import numpy as np
