@@ -262,6 +262,38 @@ class ButlerCoadd(object):
             return None
 
 
+def read_coadds_butler(butler, tract, patch, bands):
+    """
+    the butler part of the load: the tract info from the skymap and
+    the deep coadds of the bands.  Kept separate from the processing
+    (process_coadds) so the caller can close the butler, and with it
+    its registry database connection, before the star subtraction
+    and background work starts
+
+    Returns
+    -------
+    tract_info, deep_coadds: the skymap tract info and a dict band ->
+        deep_coadd
+    """
+    from .defaults import SKYMAP_VERS
+
+    skymap = butler.get("skyMap", skymap=SKYMAP_VERS)
+    tract_info = skymap[tract]
+
+    deep_coadds = {}
+    for band in bands:
+        data_id = {
+            "band": band,
+            "skymap": SKYMAP_VERS,
+            "tract": tract,
+            "patch": patch,
+        }
+        print(data_id)
+        deep_coadds[band] = butler.get('deep_coadd', dataId=data_id)
+
+    return tract_info, deep_coadds
+
+
 def load_coadds_butler(butler, tract, patch, bands,
                        redo_bg=False, starsub=False,
                        gaia_file=None, gsub=None,
@@ -270,7 +302,8 @@ def load_coadds_butler(butler, tract, patch, bands,
     """
     load the deep coadds for a patch from the butler, with the
     optional star subtraction and background redetermination
-    applied in that order.  starsub_method 'template' is
+    applied in that order: read_coadds_butler then process_coadds,
+    with the butler held throughout.  starsub_method 'template' is
     lsst_starsub.stamps.handle_stars (the reference); 'joint' calls
     lsst_starsub.coadd.starsub.handle_stars_joint with the per-band
     wing file from wing_pattern ({band} placeholder).  The
@@ -295,8 +328,29 @@ def load_coadds_butler(butler, tract, patch, bands,
     detection skips them and objects there fail the mfrac cut, and
     they are cleared from the footprint
     """
+    tract_info, deep_coadds = read_coadds_butler(
+        butler, tract, patch, bands,
+    )
+    return process_coadds(
+        tract_info, deep_coadds, tract, patch, bands,
+        redo_bg=redo_bg, starsub=starsub, gaia_file=gaia_file,
+        gsub=gsub, apod_stars=apod_stars,
+        starsub_method=starsub_method, wing_pattern=wing_pattern,
+    )
+
+
+def process_coadds(tract_info, deep_coadds, tract, patch, bands,
+                   redo_bg=False, starsub=False,
+                   gaia_file=None, gsub=None,
+                   apod_stars=True, starsub_method='template',
+                   wing_pattern=None):
+    """
+    the processing part of the load: the object injection, star
+    subtraction, background redetermination and star taper on the
+    coadds read by read_coadds_butler; no butler is needed.  See
+    load_coadds_butler for the options and the return value
+    """
     from .background import redo_background
-    from .defaults import SKYMAP_VERS
     from lsst_starsub.census import (
         APOD_STARS,
         BG_GROW,
@@ -319,9 +373,6 @@ def load_coadds_butler(butler, tract, patch, bands,
               'only; pixel weights will use the raw variance '
               'plane, which includes object poisson noise')
 
-    skymap = butler.get("skyMap", skymap=SKYMAP_VERS)
-
-    tract_info = skymap[tract]
     tract_bounds = get_tract_bounds(tract_info)
     wcs = ButlerWcs(tract_info.wcs)
 
@@ -333,14 +384,7 @@ def load_coadds_butler(butler, tract, patch, bands,
     skyvars = []
     truth = None
     for band in bands:
-        data_id = {
-            "band": band,
-            "skymap": SKYMAP_VERS,
-            "tract": tract,
-            "patch": patch,
-        }
-        print(data_id)
-        deep_coadd = butler.get('deep_coadd', dataId=data_id)
+        deep_coadd = deep_coadds[band]
         deep_coadd.apply_background('object')
 
         # the object injection test (lsst_mdet.inject, set up by
