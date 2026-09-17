@@ -16,8 +16,8 @@ from lsst_starsub.census import GSUB
 
 from ..apodize import apodize_mbobs
 from ..cells import (
-    load_coadds_butler, pull_mbobs, get_cell_healsparse_polygon,
-    get_tract_primary,
+    read_coadds_butler, process_coadds, pull_mbobs,
+    get_cell_healsparse_polygon, get_tract_primary,
 )
 from ..defaults import (
     BUTLER_COLLECTIONS, BUTLER_REPO, DM_NO_DATA, SKYMAP_VERS,
@@ -40,6 +40,11 @@ from ..wcs import calculate_positions
 BUTLER_NTRIES = 8
 BUTLER_RETRY_SLEEP = 5.0
 BUTLER_RETRY_MAX_SLEEP = 120.0
+
+# the cap on the patches in the butler read stage at once on a node:
+# a LoadSlots, set by the node driver (--max-loads) before it forks
+# the workers, or None for no cap.  The METACAL_SETTINGS pattern
+LOAD_SETTINGS = {'slots': None}
 
 
 def get_parser(per_patch=True):
@@ -358,6 +363,92 @@ def open_butler(
             time.sleep(sleep)
 
 
+class LoadSlots:
+    """
+    a cap on the number of workers on a node in the butler read
+    stage at once, and so on the node's concurrent registry
+    database connections: the DP2 pgbouncer refuses connections
+    beyond its max_client_conn, and with short patches a large
+    fraction of the workers can be reading at any moment, on every
+    node of a run.  The cap bounds the whole run's connections to
+    nodes x nslots, whatever the scheduler launches together, with
+    no coordination between the nodes.
+
+    The slots are nslots files in a directory, one taken by holding
+    a flock on it.  The kernel drops the lock when its holder dies,
+    so a worker killed in the read stage (segfault, OOM) never
+    leaks a slot.  Made by the node driver before it forks; the
+    workers inherit the instance and acquire() from it
+
+    Parameters
+    ----------
+    dirname: str
+        an existing directory for the slot files
+    nslots: int
+        the cap
+    """
+    def __init__(self, dirname, nslots):
+        import os
+
+        if nslots < 1:
+            raise ValueError(f'nslots must be >= 1, got {nslots}')
+        self.nslots = nslots
+        self.files = [
+            os.path.join(dirname, f'slot-{k:04d}') for k in range(nslots)
+        ]
+        for fname in self.files:
+            open(fname, 'a').close()
+
+    def _try_slots(self):
+        """
+        try every slot once; the fd holding the lock, or None
+        """
+        import fcntl
+        import os
+
+        for fname in self.files:
+            fd = os.open(fname, os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                os.close(fd)
+                continue
+            return fd
+        return None
+
+    def acquire(self, poll=1.0, timeout=None):
+        """
+        a context manager holding one slot, polling every poll
+        seconds (jittered) until one is free; its value is the
+        seconds waited.  With a timeout, TimeoutError if none frees
+        up in time
+        """
+        from contextlib import contextmanager
+        import os
+        import random
+        import time
+
+        @contextmanager
+        def held():
+            t0 = time.time()
+            while True:
+                fd = self._try_slots()
+                if fd is not None:
+                    break
+                if timeout is not None and time.time() - t0 > timeout:
+                    raise TimeoutError(
+                        f'no load slot free in {timeout} s'
+                    )
+                time.sleep(random.uniform(0.5 * poll, 1.5 * poll))
+            try:
+                yield time.time() - t0
+            finally:
+                # closing the descriptor releases the lock
+                os.close(fd)
+
+        return held()
+
+
 def main(
     tract,
     patch,
@@ -425,23 +516,38 @@ def main(
             # redone unless explicitly disabled
             redo_bg = True
 
-        # the butler is only needed for the load; closing it right
-        # after releases its registry database connection, which is
-        # a shared and limited resource (the DP2 pgbouncer refuses
-        # connections at its max_client_conn), rather than holding
-        # it idle for the whole processing stage
-        with open_butler(repo, collections=collections) as butler:
-            (deep_coadds, wcs, starmask, star_table, apod,
-             tract_bounds, skyvars, starsub_fits) = load_coadds_butler(
-                butler=butler, tract=tract, patch=patch,
-                bands=bands, redo_bg=redo_bg, starsub=starsub,
-                gaia_file=gaia_file, gsub=gsub,
-                apod_stars=apod_stars,
-                starsub_method=starsub_method,
-                wing_pattern=wing_pattern,
-                correction_pattern=correction_pattern,
-            )
-        del butler
+        # the butler is only needed to read the coadds; closing it
+        # right after releases its registry database connection,
+        # which is a shared and limited resource (the DP2 pgbouncer
+        # refuses connections at its max_client_conn), rather than
+        # holding it idle through the star subtraction, background
+        # and processing stages.  The node driver's load cap
+        # (LOAD_SETTINGS, --max-loads) bounds how many workers on
+        # the node are in this stage at once
+        from contextlib import nullcontext
+
+        slots = LOAD_SETTINGS['slots']
+        slot = slots.acquire() if slots is not None else nullcontext(0.0)
+        tread = time.time()
+        with slot as waited:
+            with open_butler(repo, collections=collections) as butler:
+                tract_info, coadds_by_band = read_coadds_butler(
+                    butler=butler, tract=tract, patch=patch, bands=bands,
+                )
+            del butler
+        print(f'read time: {time.time() - tread:.1f} s '
+              f'(waited {waited:.1f} s for a load slot)')
+
+        (deep_coadds, wcs, starmask, star_table, apod,
+         tract_bounds, skyvars, starsub_fits) = process_coadds(
+            tract_info, coadds_by_band, tract=tract, patch=patch,
+            bands=bands, redo_bg=redo_bg, starsub=starsub,
+            gaia_file=gaia_file, gsub=gsub,
+            apod_stars=apod_stars,
+            starsub_method=starsub_method,
+            wing_pattern=wing_pattern,
+            correction_pattern=correction_pattern,
+        )
 
     # the load is the part that hits the butler and the file system;
     # reported separately so contention shows up in the logs

@@ -25,9 +25,13 @@ set size of every child is reported for checking memory and contention.
 """
 import os
 import sys
+import tempfile
 import time
 
-from .process_cells import get_parser, parse_cell, preload, process_patch
+from .process_cells import (
+    LOAD_SETTINGS, LoadSlots, get_parser, parse_cell, preload,
+    process_patch,
+)
 
 DEFAULT_WARMUP_CELLS = [(10, 10), (11, 11)]
 
@@ -312,8 +316,17 @@ def go(args):
     # maxrss includes them, so this is the baseline to subtract
     log(f'parent rss before forking {get_rss_gb():.2f} GB')
 
-    log(f'running {len(jobs)} jobs with nproc {args.nproc}')
-    failed = run_jobs(args, jobs)
+    with tempfile.TemporaryDirectory(prefix='lsst-mdet-slots-') as slotdir:
+        # the load cap: the slot files live for the run; the
+        # children inherit LOAD_SETTINGS through the fork
+        if args.max_loads is not None:
+            LOAD_SETTINGS['slots'] = LoadSlots(slotdir, args.max_loads)
+            cap = f' and at most {args.max_loads} in the read stage'
+        else:
+            cap = ''
+
+        log(f'running {len(jobs)} jobs with nproc {args.nproc}{cap}')
+        failed = run_jobs(args, jobs)
 
     log(f'all jobs finished in {(time.time() - t0) / 60:.1f} min: '
         f'{len(jobs) - len(failed)} ok, {len(failed)} failed')
@@ -349,6 +362,12 @@ def get_node_parser():
                            'the load stage (butler registry connections, '
                            'coadd reads) over time; 0 to start them as '
                            'fast as cores free up')
+    node.add_argument('--max-loads', type=int, default=None,
+                      help='at most this many patches on the node in '
+                           'the butler read stage at once, capping the '
+                           'node\'s registry database connections '
+                           '(the DP2 pgbouncer limit); the other '
+                           'workers wait for a slot.  Default no cap')
     node.add_argument('--skip-existing', action='store_true',
                       help='skip patches whose outfile already exists')
     node.add_argument('--no-warmup', action='store_true',
@@ -364,6 +383,8 @@ def get_node_parser():
 def validate_node_args(parser, args):
     if args.nproc < 1:
         parser.error('--nproc must be >= 1')
+    if args.max_loads is not None and args.max_loads < 1:
+        parser.error('--max-loads must be >= 1')
 
 
 def get_args():

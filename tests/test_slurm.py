@@ -137,3 +137,29 @@ def test_job_cells_reach_args(tmp_path):
     job['cells'] = None
     job_args = get_job_args(args, job)
     assert job_args.cells is None
+
+
+def test_load_slots(tmp_path):
+    """
+    the node driver's load cap: nslots holders at once, the next
+    waits until one releases; a lock is per open descriptor, so one
+    process can hold and contend for the slots itself
+    """
+    from lsst_mdet.cli.process_cells import LoadSlots
+
+    slots = LoadSlots(str(tmp_path), 2)
+    assert len(list(tmp_path.glob('slot-*'))) == 2
+
+    with slots.acquire(timeout=1) as waited:
+        assert waited < 1
+        with slots.acquire(timeout=1):
+            # both taken: a third asks and times out
+            with pytest.raises(TimeoutError):
+                with slots.acquire(poll=0.05, timeout=0.3):
+                    pass
+        # one released: the wait ends
+        with slots.acquire(poll=0.05, timeout=1) as waited:
+            assert waited < 1
+
+    with pytest.raises(ValueError):
+        LoadSlots(str(tmp_path), 0)
