@@ -172,7 +172,7 @@ def get_cell_meta(nband, n=1):
         # i2 to match the object catalog cell_i/cell_j
         ('cell_i', 'i2'),
         ('cell_j', 'i2'),
-        ('good_frac', 'f4', nband),
+        ('good_frac', 'f4', (nband,)),
         ('kept', bool),
     ]
     return np.zeros(n, dtype=dtype)

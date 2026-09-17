@@ -266,14 +266,18 @@ def load_coadds_butler(butler, tract, patch, bands,
                        redo_bg=False, starsub=False,
                        gaia_file=None, gsub=None,
                        apod_stars=True, starsub_method='template',
-                       wing_pattern=None):
+                       wing_pattern=None, correction_pattern=None):
     """
     load the deep coadds for a patch from the butler, with the
     optional star subtraction and background redetermination
     applied in that order.  starsub_method 'template' is
     lsst_starsub.stamps.handle_stars (the reference); 'joint' calls
     lsst_starsub.coadd.starsub.handle_stars_joint with the per-band
-    wing file from wing_pattern ({band} placeholder).  The
+    wing file from wing_pattern ({band} placeholder); 'visit' calls
+    lsst_starsub.coadd.starsub.handle_stars_correction with the
+    correction coadd of lsst-starsub-correction-coadd from
+    correction_pattern ({tract}, {patch}, {band} placeholders): the
+    per-visit models, no fit on the coadd.  The
     star-region taper uses the
     union of the per-band star masks, so the attenuation zones
     match across the bands.  Returns
@@ -394,6 +398,16 @@ def load_coadds_butler(butler, tract, patch, bands,
                 if starsub_fits is None:
                     starsub_fits = {}
                 starsub_fits[band] = fit
+            elif starsub_method == 'visit':
+                from lsst_starsub.coadd.starsub import (
+                    handle_stars_correction,
+                )
+                starmask_b, stable_b, dstar, _ = handle_stars_correction(
+                    deep_coadd, wcs, gaia,
+                    correction_pattern.format(tract=tract, patch=patch,
+                                              band=band),
+                    gsub=gsub,
+                )
             else:
                 starmask_b, stable_b, dstar = handle_stars(
                     deep_coadd, wcs, gaia, gsub=gsub,
@@ -410,7 +424,7 @@ def load_coadds_butler(butler, tract, patch, bands,
                 # the sky-variance map
                 skyvar = redo_background(
                     deep_coadd, starmask=dstar < BG_GROW,
-                    subtract=(starsub_method != 'joint'),
+                    subtract=(starsub_method == 'template'),
                 )
             # the distance to the union of the per-band star
             # masks is the minimum of the per-band distances

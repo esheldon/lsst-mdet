@@ -64,6 +64,15 @@ def prepare_band_stars(deep_coadd, wcs, gaia, args):
             deep_coadd, wcs, gaia, wing, gsub=args.gsub,
             detect_settings=DETECT_SETTINGS,
         )
+    elif gaia is not None and args.starsub and args.starsub_method == 'visit':
+        from lsst_starsub.coadd.starsub import handle_stars_correction
+        _, star_table, dstar, _ = handle_stars_correction(
+            deep_coadd, wcs, gaia,
+            args.correction_pattern.format(
+                tract=args.tract, patch=args.patch, band=deep_coadd.band,
+            ),
+            gsub=args.gsub,
+        )
     elif gaia is not None:
         _, star_table, dstar = handle_stars(
             deep_coadd, wcs, gaia,
@@ -82,9 +91,9 @@ def prepare_band_stars(deep_coadd, wcs, gaia, args):
             smbg = dstar < BG_GROW
         # the joint route has fit the sky already; the redo then
         # only calibrates the noise and makes the sky-variance map
-        joint = args.starsub and args.starsub_method == 'joint'
+        fitted = args.starsub and args.starsub_method != 'template'
         skyvar = redo_background(
-            deep_coadd, starmask=smbg, subtract=not joint,
+            deep_coadd, starmask=smbg, subtract=not fitted,
         )
     else:
         print('    WARNING: no background redo: diagnostic '
@@ -283,16 +292,23 @@ def get_args():
     )
     parser.add_argument(
         '--starsub-method', default='template',
-        choices=['template', 'joint'],
+        choices=['template', 'joint', 'visit'],
         help='the star subtraction: the stamp-template route '
-             '(lsst_starsub.stamps, the reference) or the joint '
+             '(lsst_starsub.stamps, the reference), the joint '
              'star-and-sky fit (lsst_starsub.coadd.starsub, needs '
-             '--wing-pattern)',
+             '--wing-pattern), or the visit route (the per-visit '
+             'models coadded by lsst-starsub-correction-coadd, needs '
+             '--correction-pattern)',
     )
     parser.add_argument(
         '--wing-pattern',
         help='the per-band wing file for --starsub-method joint, a '
              'pattern with a {band} placeholder',
+    )
+    parser.add_argument(
+        '--correction-pattern',
+        help='the correction coadd file for --starsub-method visit, a '
+             'pattern with {tract}, {patch} and {band} placeholders',
     )
     parser.add_argument(
         '--redo-bg', action=argparse.BooleanOptionalAction,

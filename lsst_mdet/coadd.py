@@ -28,7 +28,15 @@ def coadd_mbobs(mbobs):
     nband = len(mbobs)
 
     if nband == 1:
-        return mbobs[0][0]
+        # one band: the observation itself, with the same meta and
+        # weight list the multi-band coadd returns
+        obs = mbobs[0][0].copy()
+        medwt = np.median(obs.weight[obs.weight > 0])
+        good_frac = obs.meta.pop('good_frac', None)
+        obs.meta['good_fracs'] = np.array(
+            [np.nan if good_frac is None else good_frac]
+        )
+        return obs, np.array([medwt])
 
     assert np.all([obslist[0].has_noise() for obslist in mbobs])
 
