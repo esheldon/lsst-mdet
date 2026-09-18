@@ -115,6 +115,15 @@ def get_parser(per_patch=True):
              'pattern with {tract}, {patch} and {band} placeholders',
     )
     parser.add_argument(
+        '--galaxy-file',
+        help='mask the large galaxies of this catalog (a FITS table '
+             'with ra, dec and d25_arcmin or logd25: the HyperLEDA '
+             'layout, lsst_starsub.galaxies), sized by the joint '
+             'fit\'s segmentation; needs --starsub-method joint.  The '
+             'regions get zero weight and leave the footprint, like '
+             'the diffuse regions',
+    )
+    parser.add_argument(
         '--bands', default='r,i,z',
         help='the bands, comma separated; default r,i,z',
     )
@@ -473,6 +482,7 @@ def main(
     correction_pattern=None,
     cells=None,
     bands=('r', 'i', 'z'),
+    galaxy_file=None,
 ):
     """
     process one patch
@@ -547,6 +557,7 @@ def main(
             starsub_method=starsub_method,
             wing_pattern=wing_pattern,
             correction_pattern=correction_pattern,
+            galaxy_file=galaxy_file,
         )
 
     # the load is the part that hits the butler and the file system;
@@ -657,7 +668,16 @@ def main(
     print(f'process time: {time.time() - tstart - tload:.1f} s')
 
     cell_meta = np.concatenate(cell_meta_list)
-    st = np.concatenate(dlist)
+    if dlist:
+        st = np.concatenate(dlist)
+    else:
+        # no cell kept (all masked or below the good fraction): an
+        # empty catalog, so the footprint and the tables still get
+        # written and the patch counts as done
+        from ..structs import get_struct
+        st = get_struct(bands=bands, n=0, model=model)
+        if not with_mdet:
+            st['mcal_step'] = 'na'
 
     # tracts overlap: primary objects must also be within the
     # tract inner boundary
@@ -695,6 +715,7 @@ def main(
             apod_stars=apod_stars,
             starsub_method=starsub_method,
             wing_pattern=wing_pattern,
+            galaxy_file=galaxy_file,
             cells=cells,
         ),
     )
@@ -808,6 +829,7 @@ def process_patch(args):
         correction_pattern=args.correction_pattern,
         cells=args.cells,
         bands=args.bands.split(','),
+        galaxy_file=args.galaxy_file,
     )
 
 

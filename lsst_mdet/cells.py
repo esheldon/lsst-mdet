@@ -298,7 +298,8 @@ def load_coadds_butler(butler, tract, patch, bands,
                        redo_bg=False, starsub=False,
                        gaia_file=None, gsub=None,
                        apod_stars=True, starsub_method='template',
-                       wing_pattern=None, correction_pattern=None):
+                       wing_pattern=None, correction_pattern=None,
+                       galaxy_file=None):
     """
     load the deep coadds for a patch from the butler, with the
     optional star subtraction and background redetermination
@@ -340,7 +341,7 @@ def load_coadds_butler(butler, tract, patch, bands,
         redo_bg=redo_bg, starsub=starsub, gaia_file=gaia_file,
         gsub=gsub, apod_stars=apod_stars,
         starsub_method=starsub_method, wing_pattern=wing_pattern,
-        correction_pattern=correction_pattern,
+        correction_pattern=correction_pattern, galaxy_file=galaxy_file,
     )
 
 
@@ -348,12 +349,19 @@ def process_coadds(tract_info, deep_coadds, tract, patch, bands,
                    redo_bg=False, starsub=False,
                    gaia_file=None, gsub=None,
                    apod_stars=True, starsub_method='template',
-                   wing_pattern=None, correction_pattern=None):
+                   wing_pattern=None, correction_pattern=None,
+                   galaxy_file=None):
     """
     the processing part of the load: the object injection, star
     subtraction, background redetermination and star taper on the
     coadds read by read_coadds_butler; no butler is needed.  See
-    load_coadds_butler for the options and the return value
+    load_coadds_butler for the options and the return value.
+
+    galaxy_file: the large-galaxy catalog (lsst_starsub.galaxies,
+    the HyperLEDA layout); needs the joint method, whose
+    segmentation gives the mask sizes.  The galaxies' regions join
+    the returned starmask the way the diffuse regions do: pixels
+    left in the image, zero weight, cleared from the footprint
     """
     from .background import redo_background
     from lsst_starsub.census import (
@@ -504,6 +512,28 @@ def process_coadds(tract_info, deep_coadds, tract, patch, bands,
                 print(f'diffuse mask fraction {diffuse.mean():.3f} '
                       f'(grown {DIFFUSE_MARGIN} px)')
                 starmask |= diffuse
+
+    # the large-galaxy mask: the catalog galaxies' regions, sized by
+    # the joint fit's segmentation, zero weight like the diffuse
+    # regions
+    if galaxy_file is not None:
+        if starsub_fits is None:
+            raise ValueError(
+                'the large-galaxy mask needs --starsub-method joint: its '
+                'segmentation gives the mask sizes'
+            )
+        from lsst_starsub.galaxies import (
+            galaxy_mask, galaxy_pixel_positions, read_galaxy_file,
+        )
+        bbox = deep_coadds[bands[0]].bbox
+        gals = read_galaxy_file(galaxy_file, wcs, bbox)
+        if gals.size > 0:
+            gx, gy = galaxy_pixel_positions(gals, wcs, bbox)
+            gmask, _ = galaxy_mask(
+                starsub_fits, gals, gx, gy, starmask.shape,
+            )
+            if gmask is not None:
+                starmask |= gmask
 
     return (
         coadds, wcs, starmask, star_table, apod, tract_bounds,
