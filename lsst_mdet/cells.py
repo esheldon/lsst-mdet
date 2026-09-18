@@ -389,6 +389,26 @@ def process_coadds(tract_info, deep_coadds, tract, patch, bands,
     tract_bounds = get_tract_bounds(tract_info)
     wcs = ButlerWcs(tract_info.wcs)
 
+    # the large-galaxy catalog, read once: the galaxies' D25 ellipses
+    # are kept out of the joint sky fit, and after the loop their
+    # regions, sized by the fit's segmentation, join the mask
+    galaxies = None
+    if galaxy_file is not None:
+        if not (starsub and starsub_method == 'joint'):
+            raise ValueError(
+                'the large-galaxy mask needs --starsub with '
+                '--starsub-method joint: its segmentation gives the '
+                'mask sizes'
+            )
+        from lsst_starsub.galaxies import (
+            galaxy_pixel_positions, read_galaxy_file,
+        )
+        bbox = deep_coadds[bands[0]].bbox
+        gals = read_galaxy_file(galaxy_file, wcs, bbox)
+        if gals.size > 0:
+            gx, gy = galaxy_pixel_positions(gals, wcs, bbox)
+            galaxies = (gals, gx, gy)
+
     coadds = []
     gaia = None
     dstar_min = None
@@ -447,6 +467,7 @@ def process_coadds(tract_info, deep_coadds, tract, patch, bands,
                 starmask_b, stable_b, dstar, fit = handle_stars_joint(
                     deep_coadd, wcs, gaia, wing, gsub=gsub,
                     detect_settings=DETECT_SETTINGS,
+                    galaxies=galaxies,
                 )
                 if starsub_fits is None:
                     starsub_fits = {}
@@ -516,24 +537,12 @@ def process_coadds(tract_info, deep_coadds, tract, patch, bands,
     # the large-galaxy mask: the catalog galaxies' regions, sized by
     # the joint fit's segmentation, zero weight like the diffuse
     # regions
-    if galaxy_file is not None:
-        if starsub_fits is None:
-            raise ValueError(
-                'the large-galaxy mask needs --starsub-method joint: its '
-                'segmentation gives the mask sizes'
-            )
-        from lsst_starsub.galaxies import (
-            galaxy_mask, galaxy_pixel_positions, read_galaxy_file,
-        )
-        bbox = deep_coadds[bands[0]].bbox
-        gals = read_galaxy_file(galaxy_file, wcs, bbox)
-        if gals.size > 0:
-            gx, gy = galaxy_pixel_positions(gals, wcs, bbox)
-            gmask, _ = galaxy_mask(
-                starsub_fits, gals, gx, gy, starmask.shape,
-            )
-            if gmask is not None:
-                starmask |= gmask
+    if galaxies is not None and starsub_fits is not None:
+        from lsst_starsub.galaxies import galaxy_mask
+        gals, gx, gy = galaxies
+        gmask, _ = galaxy_mask(starsub_fits, gals, gx, gy, starmask.shape)
+        if gmask is not None:
+            starmask |= gmask
 
     return (
         coadds, wcs, starmask, star_table, apod, tract_bounds,
