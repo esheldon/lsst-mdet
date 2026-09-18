@@ -398,7 +398,8 @@ def process_coadds(tract_info, deep_coadds, tract, patch, bands,
             raise ValueError(
                 'the large-galaxy mask needs --starsub with '
                 '--starsub-method joint: its segmentation gives the '
-                'mask sizes'
+                'mask sizes.  For the visit route see the open items '
+                'at the end of lsst-starsub/visit-plan.md'
             )
         from lsst_starsub.galaxies import (
             galaxy_pixel_positions, read_galaxy_file,
