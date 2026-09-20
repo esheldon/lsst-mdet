@@ -163,7 +163,7 @@ def write_output(
     (lsst_starsub.coadd.starsub.make_fit_tables), from which the
     subtracted sky and star images can be rebuilt
     """
-    from .provenance import make_meta
+    from .provenance import make_meta, meta_var_dtypes
 
     options = dict(
         tract=tract,
@@ -183,7 +183,8 @@ def write_output(
     print('writing:', fname)
     with rustfits.FITS(fname, 'w+') as fits:
         fits.write_table(st, extname='cat', compress=True)
-        fits.write_table(meta, extname='meta', compress=True)
+        fits.write_table(meta, extname='meta', compress=True,
+                         var_dtypes=meta_var_dtypes(meta))
         fits.write_table(_squeeze_unit_fields(cell_meta),
                          extname='cell_meta', compress=True)
         if starsub_tables is not None:

@@ -9,21 +9,12 @@ the packages, and the run identity (date, host, command line).
 """
 import numpy as np
 
-# string column widths: paths and lists get room, short names less
-STRING_WIDTHS = {
-    'model': 8,
-    'repo': 256,
-    'collections': 256,
-    'patch_dir': 256,
-    'gaia_file': 256,
-    'cells': 256,
-    'inject_profiles': 256,
-    'inject_objects': 256,
-    'command': 1024,
-    'hostname': 64,
-    'date': 32,
-}
-DEFAULT_STRING_WIDTH = 32
+# the string columns are variable length (Object dtype here, a FITS
+# variable-length character column on disk, see meta_var_dtypes), so
+# no path, cell list or command line is truncated: fixed widths cut
+# the wing pattern and the galaxy file at 32 characters and the cell
+# lists at 256 (through v0.3.0)
+STRING_DTYPE = 'O'
 
 # the packages whose versions are recorded: the measurement engine
 # and its k-space fitter, the metacal operator, the detector, the
@@ -50,7 +41,8 @@ def make_meta(run_options):
 
     Returns
     -------
-    structured array with one row
+    structured array with one row; the string columns have Object
+    dtype, to be written with meta_var_dtypes
     """
     entries = list(run_options.items())
     entries += settings_entries()
@@ -60,8 +52,28 @@ def make_meta(run_options):
     dtype = [(name, _column_dtype(name, value)) for name, value in entries]
     meta = np.zeros(1, dtype=dtype)
     for name, value in entries:
-        meta[name] = _column_value(value)
+        meta[name][0] = _column_value(value)
     return meta
+
+
+def meta_var_dtypes(meta):
+    """
+    The var_dtypes of the meta table for rustfits' write_table: its
+    Object columns are variable-length strings.
+
+    Parameters
+    ----------
+    meta: structured array
+        From make_meta
+
+    Returns
+    -------
+    dict of column name -> 'S'
+    """
+    return {
+        name: 'S' for name in meta.dtype.names
+        if meta.dtype[name].kind == 'O'
+    }
 
 
 def settings_entries():
@@ -198,13 +210,18 @@ def _column_dtype(name, value):
         return 'i8'
     if isinstance(value, (float, np.floating)):
         return 'f8'
-    width = STRING_WIDTHS.get(name, DEFAULT_STRING_WIDTH)
-    return f'U{width}'
+    return STRING_DTYPE
 
 
 def _column_value(value):
+    if isinstance(value, (bool, np.bool_, int, np.integer, float,
+                          np.floating)):
+        return value
     if value is None:
         return ''
     if isinstance(value, (list, tuple)):
-        return ','.join(str(v) for v in value)
-    return value
+        value = ','.join(str(v) for v in value)
+    elif isinstance(value, bytes):
+        value = value.decode('ascii', 'replace')
+    # a FITS character column is ASCII
+    return str(value).encode('ascii', 'replace').decode('ascii')
