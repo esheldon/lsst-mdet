@@ -96,16 +96,36 @@ def get_parser(per_patch=True):
     )
     parser.add_argument(
         '--starsub-method', default='template',
-        choices=['template', 'joint'],
+        choices=['template', 'joint', 'visit'],
         help='the star subtraction: the stamp-template route '
-             '(lsst_starsub.stamps, the reference) or the joint '
+             '(lsst_starsub.stamps, the reference), the joint '
              'star-and-sky fit (lsst_starsub.coadd.starsub, needs '
-             '--wing-pattern)',
+             '--wing-pattern), or the visit route (the per-visit '
+             'models coadded by lsst-starsub-correction-coadd, needs '
+             '--correction-pattern)',
     )
     parser.add_argument(
         '--wing-pattern',
         help='the per-band wing file for --starsub-method joint, a '
              'pattern with a {band} placeholder',
+    )
+    parser.add_argument(
+        '--correction-pattern',
+        help='the correction coadd file for --starsub-method visit, a '
+             'pattern with {tract}, {patch} and {band} placeholders',
+    )
+    parser.add_argument(
+        '--galaxy-file',
+        help='mask the large galaxies of this catalog (a FITS table '
+             'with ra, dec and d25_arcmin or logd25: the HyperLEDA '
+             'layout, lsst_starsub.galaxies), sized by the joint '
+             'fit\'s segmentation; needs --starsub-method joint.  The '
+             'regions get zero weight and leave the footprint, like '
+             'the diffuse regions',
+    )
+    parser.add_argument(
+        '--bands', default='r,i,z',
+        help='the bands, comma separated; default r,i,z',
     )
     parser.add_argument('--deblend', action='store_true')
     parser.add_argument('--s2-detect', action='store_true')
@@ -459,7 +479,10 @@ def main(
     apod_stars=True,
     starsub_method='template',
     wing_pattern=None,
+    correction_pattern=None,
     cells=None,
+    bands=('r', 'i', 'z'),
+    galaxy_file=None,
 ):
     """
     process one patch
@@ -481,7 +504,7 @@ def main(
 
     dlist = []
 
-    bands = ['r', 'i', 'z']
+    bands = list(bands)
 
     if patch_dir is not None:
         if redo_bg or starsub:
@@ -533,6 +556,8 @@ def main(
             apod_stars=apod_stars,
             starsub_method=starsub_method,
             wing_pattern=wing_pattern,
+            correction_pattern=correction_pattern,
+            galaxy_file=galaxy_file,
         )
 
     # the load is the part that hits the butler and the file system;
@@ -643,7 +668,16 @@ def main(
     print(f'process time: {time.time() - tstart - tload:.1f} s')
 
     cell_meta = np.concatenate(cell_meta_list)
-    st = np.concatenate(dlist)
+    if dlist:
+        st = np.concatenate(dlist)
+    else:
+        # no cell kept (all masked or below the good fraction): an
+        # empty catalog, so the footprint and the tables still get
+        # written and the patch counts as done
+        from ..structs import get_struct
+        st = get_struct(bands=bands, n=0, model=model)
+        if not with_mdet:
+            st['mcal_step'] = 'na'
 
     # tracts overlap: primary objects must also be within the
     # tract inner boundary
@@ -681,6 +715,7 @@ def main(
             apod_stars=apod_stars,
             starsub_method=starsub_method,
             wing_pattern=wing_pattern,
+            galaxy_file=galaxy_file,
             cells=cells,
         ),
     )
@@ -721,10 +756,13 @@ def main(
     # reduced-resolution color image of the final masked
     # images, non-footprint area tinted, for inspecting gross
     # problems
-    write_color_image(
-        outfile.replace('.fits', '-color.jpg'), deep_coadds,
-        wcs=wcs, footprint=footprint,
-    )
+    if len(deep_coadds) >= 3:
+        write_color_image(
+            outfile.replace('.fits', '-color.jpg'), deep_coadds,
+            wcs=wcs, footprint=footprint,
+        )
+    else:
+        print('    fewer than 3 bands: no color image')
 
     # stacked residual profiles of the subtracted stars: flat
     # and zero means the subtraction left nothing behind.  The
@@ -788,7 +826,10 @@ def process_patch(args):
         apod_stars=args.apod_stars,
         starsub_method=args.starsub_method,
         wing_pattern=args.wing_pattern,
+        correction_pattern=args.correction_pattern,
         cells=args.cells,
+        bands=args.bands.split(','),
+        galaxy_file=args.galaxy_file,
     )
 
 

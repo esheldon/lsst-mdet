@@ -109,6 +109,30 @@ def _block_average(arr, binfac):
     return np.nan_to_num(out)
 
 
+def _squeeze_unit_fields(table):
+    """
+    A copy of a structured array with its length-1 subarray fields made
+    scalar (a single-band run's per-band columns): the compressed
+    table writer takes vector columns of length 2 and more only.
+    """
+    dtype = []
+    changed = False
+    for name in table.dtype.names:
+        dt, _ = table.dtype.fields[name]
+        if dt.shape == (1,):
+            dtype.append((name, dt.base))
+            changed = True
+        else:
+            dtype.append((name, dt))
+    if not changed:
+        return table
+    out = np.zeros(table.size, dtype=dtype)
+    for name in table.dtype.names:
+        col = table[name]
+        out[name] = col[:, 0] if col.ndim == 2 and col.shape[1] == 1 else col
+    return out
+
+
 def write_output(
     fname,
     st,
@@ -160,7 +184,8 @@ def write_output(
     with rustfits.FITS(fname, 'w+') as fits:
         fits.write_table(st, extname='cat', compress=True)
         fits.write_table(meta, extname='meta', compress=True)
-        fits.write_table(cell_meta, extname='cell_meta', compress=True)
+        fits.write_table(_squeeze_unit_fields(cell_meta),
+                         extname='cell_meta', compress=True)
         if starsub_tables is not None:
             for extname, table in starsub_tables.items():
                 fits.write_table(table, extname=extname, compress=True)

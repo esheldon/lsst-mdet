@@ -298,7 +298,8 @@ def load_coadds_butler(butler, tract, patch, bands,
                        redo_bg=False, starsub=False,
                        gaia_file=None, gsub=None,
                        apod_stars=True, starsub_method='template',
-                       wing_pattern=None):
+                       wing_pattern=None, correction_pattern=None,
+                       galaxy_file=None):
     """
     load the deep coadds for a patch from the butler, with the
     optional star subtraction and background redetermination
@@ -306,7 +307,11 @@ def load_coadds_butler(butler, tract, patch, bands,
     with the butler held throughout.  starsub_method 'template' is
     lsst_starsub.stamps.handle_stars (the reference); 'joint' calls
     lsst_starsub.coadd.starsub.handle_stars_joint with the per-band
-    wing file from wing_pattern ({band} placeholder).  The
+    wing file from wing_pattern ({band} placeholder); 'visit' calls
+    lsst_starsub.coadd.starsub.handle_stars_correction with the
+    correction coadd of lsst-starsub-correction-coadd from
+    correction_pattern ({tract}, {patch}, {band} placeholders): the
+    per-visit models, no fit on the coadd.  The
     star-region taper uses the
     union of the per-band star masks, so the attenuation zones
     match across the bands.  Returns
@@ -336,6 +341,7 @@ def load_coadds_butler(butler, tract, patch, bands,
         redo_bg=redo_bg, starsub=starsub, gaia_file=gaia_file,
         gsub=gsub, apod_stars=apod_stars,
         starsub_method=starsub_method, wing_pattern=wing_pattern,
+        correction_pattern=correction_pattern, galaxy_file=galaxy_file,
     )
 
 
@@ -343,12 +349,19 @@ def process_coadds(tract_info, deep_coadds, tract, patch, bands,
                    redo_bg=False, starsub=False,
                    gaia_file=None, gsub=None,
                    apod_stars=True, starsub_method='template',
-                   wing_pattern=None):
+                   wing_pattern=None, correction_pattern=None,
+                   galaxy_file=None):
     """
     the processing part of the load: the object injection, star
     subtraction, background redetermination and star taper on the
     coadds read by read_coadds_butler; no butler is needed.  See
-    load_coadds_butler for the options and the return value
+    load_coadds_butler for the options and the return value.
+
+    galaxy_file: the large-galaxy catalog (lsst_starsub.galaxies,
+    the HyperLEDA layout); needs the joint method, whose
+    segmentation gives the mask sizes.  The galaxies' regions join
+    the returned starmask the way the diffuse regions do: pixels
+    left in the image, zero weight, cleared from the footprint
     """
     from .background import redo_background
     from lsst_starsub.census import (
@@ -375,6 +388,27 @@ def process_coadds(tract_info, deep_coadds, tract, patch, bands,
 
     tract_bounds = get_tract_bounds(tract_info)
     wcs = ButlerWcs(tract_info.wcs)
+
+    # the large-galaxy catalog, read once: the galaxies' D25 ellipses
+    # are kept out of the joint sky fit, and after the loop their
+    # regions, sized by the fit's segmentation, join the mask
+    galaxies = None
+    if galaxy_file is not None:
+        if not (starsub and starsub_method == 'joint'):
+            raise ValueError(
+                'the large-galaxy mask needs --starsub with '
+                '--starsub-method joint: its segmentation gives the '
+                'mask sizes.  For the visit route see the open items '
+                'at the end of lsst-starsub/visit-plan.md'
+            )
+        from lsst_starsub.galaxies import (
+            galaxy_pixel_positions, read_galaxy_file,
+        )
+        bbox = deep_coadds[bands[0]].bbox
+        gals = read_galaxy_file(galaxy_file, wcs, bbox)
+        if gals.size > 0:
+            gx, gy = galaxy_pixel_positions(gals, wcs, bbox)
+            galaxies = (gals, gx, gy)
 
     coadds = []
     gaia = None
@@ -434,10 +468,21 @@ def process_coadds(tract_info, deep_coadds, tract, patch, bands,
                 starmask_b, stable_b, dstar, fit = handle_stars_joint(
                     deep_coadd, wcs, gaia, wing, gsub=gsub,
                     detect_settings=DETECT_SETTINGS,
+                    galaxies=galaxies,
                 )
                 if starsub_fits is None:
                     starsub_fits = {}
                 starsub_fits[band] = fit
+            elif starsub_method == 'visit':
+                from lsst_starsub.coadd.starsub import (
+                    handle_stars_correction,
+                )
+                starmask_b, stable_b, dstar, _ = handle_stars_correction(
+                    deep_coadd, wcs, gaia,
+                    correction_pattern.format(tract=tract, patch=patch,
+                                              band=band),
+                    gsub=gsub,
+                )
             else:
                 starmask_b, stable_b, dstar = handle_stars(
                     deep_coadd, wcs, gaia, gsub=gsub,
@@ -454,7 +499,7 @@ def process_coadds(tract_info, deep_coadds, tract, patch, bands,
                 # the sky-variance map
                 skyvar = redo_background(
                     deep_coadd, starmask=dstar < BG_GROW,
-                    subtract=(starsub_method != 'joint'),
+                    subtract=(starsub_method == 'template'),
                 )
             # the distance to the union of the per-band star
             # masks is the minimum of the per-band distances
@@ -489,6 +534,16 @@ def process_coadds(tract_info, deep_coadds, tract, patch, bands,
                 print(f'diffuse mask fraction {diffuse.mean():.3f} '
                       f'(grown {DIFFUSE_MARGIN} px)')
                 starmask |= diffuse
+
+    # the large-galaxy mask: the catalog galaxies' regions, sized by
+    # the joint fit's segmentation, zero weight like the diffuse
+    # regions
+    if galaxies is not None and starsub_fits is not None:
+        from lsst_starsub.galaxies import galaxy_mask
+        gals, gx, gy = galaxies
+        gmask, _ = galaxy_mask(starsub_fits, gals, gx, gy, starmask.shape)
+        if gmask is not None:
+            starmask |= gmask
 
     return (
         coadds, wcs, starmask, star_table, apod, tract_bounds,
