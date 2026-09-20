@@ -30,6 +30,11 @@ The star subtraction is the template route unless --starsub-method
 joint is given with --wing-pattern, the per-band canonical wing
 files (lsst_starsub); the wing pattern is not used otherwise.
 
+--galaxy-file (the large-galaxy mask, with the joint method) and
+--max-loads (the node driver's cap on the patches reading from the
+butler at once) are passed on in run.sh.  The registry connections
+the run holds are at most --throttle x --max-loads.
+
 The gaia stars come from per-tract files made by lsst-starsub-make-gaia,
 see --gaia-pattern.  Tracts at low galactic latitude are left out as
 in lsst-starsub-make-gaia (--min-abs-b) and listed in low-latitude.txt;
@@ -91,7 +96,7 @@ export OPENBLAS_NUM_THREADS=1
 lsst-mdet-process-node \
     --joblist ${joblist} \
     --nproc ${nproc} \
-    --start-interval %(start_interval)g \
+    --start-interval %(start_interval)g%(node_options)s \
     --gaia-pattern '%(gaia_pattern)s' \
     --target-psf '%(target_psf)s' \
     --redo-bg \
@@ -188,9 +193,34 @@ def get_starsub_options(starsub_method, wing_pattern):
     )
 
 
+def get_node_options(max_loads=None, galaxy_file=None):
+    """
+    The optional node driver options for run.sh.
+
+    Parameters
+    ----------
+    max_loads: int or None
+        The --max-loads for the node driver, the cap on the patches
+        in the butler read stage at once on a node
+    galaxy_file: str or None
+        The --galaxy-file for the processing, the large-galaxy catalog
+
+    Returns
+    -------
+    str
+        The option text, empty with neither given
+    """
+    text = ''
+    if max_loads is not None:
+        text += f' \\\n    --max-loads {max_loads:d}'
+    if galaxy_file is not None:
+        text += f" \\\n    --galaxy-file '{galaxy_file}'"
+    return text
+
+
 def write_script(
     gaia_pattern, target_psf, mdet=True, starsub_method='template',
-    wing_pattern=None,
+    wing_pattern=None, max_loads=None, galaxy_file=None,
 ):
     """
     Write run.sh.
@@ -207,6 +237,10 @@ def write_script(
         'template' or 'joint', see get_starsub_options
     wing_pattern: str or None
         The wing file pattern for the joint method
+    max_loads: int or None
+        The node driver's --max-loads, see get_node_options
+    galaxy_file: str or None
+        The --galaxy-file for the processing, see get_node_options
     """
     fname = 'run.sh'
 
@@ -216,6 +250,7 @@ def write_script(
             'gaia_pattern': gaia_pattern,
             'target_psf': target_psf,
             'start_interval': DEFAULT_START_INTERVAL,
+            'node_options': get_node_options(max_loads, galaxy_file),
             'starsub': get_starsub_options(starsub_method, wing_pattern),
             'mdet': ' \\\n    --mdet' if mdet else '',
         })
@@ -660,6 +695,8 @@ def go(args):
         args.gaia_pattern, args.target_psf, mdet=not args.no_mdet,
         starsub_method=args.starsub_method,
         wing_pattern=args.wing_pattern,
+        max_loads=args.max_loads,
+        galaxy_file=args.galaxy_file,
     )
     write_node_jobs(args=args, rng=rng, patch_jobs=patch_jobs)
 
@@ -766,6 +803,20 @@ def get_args():
                              '--starsub-method joint, with a {band} '
                              'placeholder; ignored for the template '
                              'method')
+    parser.add_argument('--galaxy-file',
+                        help='mask the large galaxies of this catalog in '
+                             'the processing (the HyperLEDA layout, '
+                             'lsst_starsub.galaxies); needs '
+                             '--starsub-method joint, whose segmentation '
+                             'sizes the masks')
+    parser.add_argument('--max-loads', type=int,
+                        help='at most this many patches on a node in the '
+                             'butler read stage at once, capping the '
+                             "node's registry connections.  The nodes "
+                             'running together (--throttle) times this '
+                             'is the most connections the run holds; 16 '
+                             'nodes x 16 (~260) is known to stay under '
+                             'the DP2 pgbouncer limit.  Default no cap')
     parser.add_argument('--gaia-pattern', default=GAIA_PATTERN,
                         help='gaia file pattern with {tract} and '
                              'optionally {patch} placeholders; default '
@@ -789,6 +840,10 @@ def get_args():
         parser.error('--starsub-method joint needs --wing-pattern')
     if args.starsub_method == 'joint' and '{band}' not in args.wing_pattern:
         parser.error('--wing-pattern needs a {band} placeholder')
+    if args.galaxy_file is not None and args.starsub_method != 'joint':
+        parser.error('--galaxy-file needs --starsub-method joint')
+    if args.max_loads is not None and args.max_loads < 1:
+        parser.error('--max-loads must be >= 1')
     if args.qos == 'shared' and args.nproc > SHARED_MAX_NPROC:
         parser.error(f'--nproc on the shared QOS is at most '
                      f'{SHARED_MAX_NPROC} (half a node)')

@@ -163,3 +163,34 @@ def test_load_slots(tmp_path):
 
     with pytest.raises(ValueError):
         LoadSlots(str(tmp_path), 0)
+
+
+def test_write_script_node_options(tmp_path, monkeypatch):
+    """
+    --max-loads and --galaxy-file reach run.sh, as continued option
+    lines of the node driver call, and leave it unchanged when absent
+    """
+    from lsst_mdet.cli.make_slurm_nersc import (
+        get_node_options, write_script,
+    )
+
+    assert get_node_options() == ''
+    monkeypatch.chdir(tmp_path)
+    kw = dict(starsub_method='joint', wing_pattern='wing-{band}.fits')
+    write_script('gaia-{tract:05d}.fits', 'AZGauss', **kw)
+    plain = (tmp_path / 'run.sh').read_text()
+    assert '--max-loads' not in plain and '--galaxy-file' not in plain
+
+    write_script('gaia-{tract:05d}.fits', 'AZGauss', max_loads=8,
+                 galaxy_file='/some/leda.fits', **kw)
+    text = (tmp_path / 'run.sh').read_text()
+    assert "    --max-loads 8 \\\n" in text
+    assert "    --galaxy-file '/some/leda.fits' \\\n" in text
+    # the two lines are the only difference
+    lines = [ln for ln in text.splitlines()
+             if '--max-loads' not in ln and '--galaxy-file' not in ln]
+    assert lines == plain.splitlines()
+    # every option line but the last is continued
+    body = text[text.index('lsst-mdet-process-node'):].rstrip().splitlines()
+    assert all(ln.endswith('\\') for ln in body[:-1])
+    assert not body[-1].endswith('\\')

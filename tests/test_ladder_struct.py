@@ -157,6 +157,7 @@ def test_meta_records_provenance(tmp_path):
     from lsst_mdet.io import write_output
     from lsst_mdet.structs import get_cell_meta
 
+    LONG_PATH = '/pscratch/' + 'a-long-directory-name/' * 15 + 'leda.fits'
     fname = str(tmp_path / 'out.fits')
     st = get_struct(BANDS, 1, model='ladder')
     write_output(
@@ -167,6 +168,7 @@ def test_meta_records_provenance(tmp_path):
             repo='dp2', collections=['a', 'b'], patch_dir=None,
             gaia_file=None, gsub=19.0, apod_stars=True,
             cells=[(10, 10), (11, 12)],
+            galaxy_file=LONG_PATH, wing_pattern=LONG_PATH + '-{band}.fits',
         ),
     )
     meta = rustfits.read(fname, ext='meta')
@@ -182,6 +184,10 @@ def test_meta_records_provenance(tmp_path):
     assert m['gsub'] == 19.0
     assert m['apod_stars']
     assert m['cells'] == '(10, 10),(11, 12)'
+    # the string columns are variable length: nothing is truncated
+    assert meta.dtype['model'].kind == 'O'
+    assert m['galaxy_file'] == LONG_PATH and len(LONG_PATH) > 256
+    assert m['wing_pattern'] == LONG_PATH + '-{band}.fits'
 
     for name, value in DEBLEND_SETTINGS.items():
         assert m[f'deblend_{name}'] == value
