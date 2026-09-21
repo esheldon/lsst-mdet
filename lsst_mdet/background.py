@@ -5,6 +5,54 @@ import numpy as np
 from .defaults import DM_OUT
 
 
+# sep's limit on the active object pixels in an extraction: a galaxy
+# filling a good part of the patch overflows the default (NGC 1527 in
+# 02395-00072, D25 4.5 arcmin: "internal pixel buffer full").  On that
+# error the extraction is retried with the stack grown by
+# PIXSTACK_GROWTH, up to PIXSTACK_MAX.  The stack is capacity only:
+# an extraction that fits gives the same result at any size
+PIXSTACK_GROWTH = 4
+PIXSTACK_MAX = int(3.2e7)
+
+
+def extract_with_retry(*args, **kwargs):
+    """
+    sep.extract, retried with a larger pixel stack when it overflows.
+
+    The first attempt runs with the stack as it is set (sep's default
+    unless the caller changed it); on "internal pixel buffer full" the
+    stack grows by PIXSTACK_GROWTH per retry up to PIXSTACK_MAX, past
+    which the error is raised.  The previous setting is restored.
+
+    Parameters
+    ----------
+    *args, **kwargs:
+        Passed to sep.extract
+
+    Returns
+    -------
+    What sep.extract returns
+    """
+    import sep
+
+    old_stack = sep.get_extract_pixstack()
+    stack = old_stack
+    try:
+        while True:
+            try:
+                return sep.extract(*args, **kwargs)
+            except Exception as error:
+                if ('pixel buffer full' not in str(error)
+                        or stack >= PIXSTACK_MAX):
+                    raise
+                stack = min(stack * PIXSTACK_GROWTH, PIXSTACK_MAX)
+                print(f'    background: sep pixel stack full; retrying '
+                      f'with {stack}')
+                sep.set_extract_pixstack(stack)
+    finally:
+        sep.set_extract_pixstack(old_stack)
+
+
 def redo_background(deep_coadd, starmask=None, subtract=True):
     """
     redo the background determination on the image, in place,
@@ -45,7 +93,7 @@ def redo_background(deep_coadd, starmask=None, subtract=True):
     bkg = sep.Background(image, mask=bad)
     # image -= bkg.back()
 
-    objects, seg = sep.extract(
+    objects, seg = extract_with_retry(
         image - bkg.back(),
         1.5,
         mask=bad,
