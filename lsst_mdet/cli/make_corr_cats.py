@@ -79,7 +79,7 @@ def _gal_chunk(task):
     parts = []
     rsums = {'w1p': 0.0, 'g1p': 0.0, 'w1m': 0.0, 'g1m': 0.0}
     for fname in fnames:
-        gals = apply_selection(rustfits.read(fname), config)
+        gals = apply_selection(rustfits.read(fname, ext='cat'), config)
         if SELECT_FOOTPRINT is not None:
             keep = SELECT_FOOTPRINT.get_values_pos(
                 gals['ra'], gals['dec'],

@@ -98,7 +98,7 @@ def _map_chunk(task):
     rsums = {f'{k}{s}': 0.0 for s in SHEAR_STEPS for k in ('w', 'g')}
 
     for fname in fnames:
-        gals = apply_selection(rustfits.read(fname), config)
+        gals = apply_selection(rustfits.read(fname, ext='cat'), config)
         weights = get_weights(gals)
 
         wns, = np.where(gals['mcal_step'] == 'ns')

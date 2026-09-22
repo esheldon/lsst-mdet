@@ -662,7 +662,7 @@ def _dosums_main(config_file, flist_file, outfile):
     allhist = _init_hist2d(config)
 
     for i, fname in enumerate(tqdm(flist, ascii=True, ncols=70)):
-        orig = rustfits.read(fname)
+        orig = rustfits.read(fname, ext='cat')
         if i == 0:
             validate_config_columns(config, orig)
 
