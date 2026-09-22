@@ -100,3 +100,59 @@ def test_weight_from_weight_var():
     assert obs.weight[0, 0] == 0
     assert obs.weight[5, 5] == pytest.approx(1 / 2.0)
     assert obs.weight[15, 15] == pytest.approx(1 / 3.0)
+
+
+def test_extract_retries_on_full_pixel_stack(capsys):
+    """
+    a galaxy filling much of the image overflows sep's pixel stack:
+    extract_with_retry grows the stack and succeeds, gives the same
+    result as an extraction with room from the start, restores the
+    setting, and redo_background runs on such an image
+    """
+    import sep
+
+    from lsst_mdet.background import extract_with_retry
+
+    rng = np.random.RandomState(8)
+    sigma = 1.0
+    yy, xx = np.mgrid[:DIM, :DIM]
+    r2 = (xx - 256) ** 2 + (yy - 256) ** 2
+    blob = 50.0 * np.exp(-0.5 * r2 / 90.0 ** 2)
+    image = rng.normal(scale=sigma, size=(DIM, DIM)) + blob
+    assert (blob > 1.5 * sigma).sum() > 60000
+
+    old = sep.get_extract_pixstack()
+    try:
+        sep.set_extract_pixstack(20000)
+        with pytest.raises(Exception, match='pixel buffer full'):
+            sep.extract(image, 1.5, err=sigma, segmentation_map=True)
+        objs, seg = extract_with_retry(
+            image, 1.5, err=sigma, segmentation_map=True,
+        )
+        assert 'retrying' in capsys.readouterr().out
+        # the setting is restored
+        assert sep.get_extract_pixstack() == 20000
+
+        sep.set_extract_pixstack(old)
+        objs0, seg0 = sep.extract(image, 1.5, err=sigma, segmentation_map=True)
+        assert np.array_equal(seg, seg0) and objs.size == objs0.size
+
+        # the full path: the background redo on the same image
+        sep.set_extract_pixstack(20000)
+        coadd = FakeCoadd(
+            image.copy(), np.full((DIM, DIM), sigma ** 2, dtype='f4'),
+            rng.normal(scale=sigma, size=(DIM, DIM)),
+        )
+        skyvar = redo_background(coadd, subtract=False)
+        assert skyvar.shape == (DIM, DIM)
+        assert sep.get_extract_pixstack() == 20000
+    finally:
+        sep.set_extract_pixstack(old)
+
+
+def test_extract_other_errors_raise():
+    from lsst_mdet.background import extract_with_retry
+
+    with pytest.raises(Exception):
+        # not an overflow: a bad argument is not retried
+        extract_with_retry(np.zeros((8, 8)), 1.5, err=-1.0, bogus=True)
