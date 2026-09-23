@@ -166,6 +166,13 @@ def get_parser(per_patch=True):
              'must be larger than any input psf',
     )
     parser.add_argument(
+        '--mcal-types', type=parse_mcal_types, default=DEFAULT_MCAL_TYPES,
+        help='the metacal steps, comma separated from noshear, 1p, '
+             '1m, 2p, 2m; noshear must be among them.  The default '
+             f'{DEFAULT_MCAL_TYPES} gives the R11 response; add '
+             '2p,2m for the full response matrix',
+    )
+    parser.add_argument(
         '--cells', nargs='+', type=parse_cell,
         help='process only these cells, given as i,j with 1-20 '
              'for each, e.g. --cells 10,10 11,12.  Used for '
@@ -174,6 +181,30 @@ def get_parser(per_patch=True):
     parser.add_argument('--progress', action='store_true')
     parser.add_argument('--show', action='store_true')
     return parser
+
+
+# the metacal steps: the default is what the production catalogs
+# carry; every step is a full detection and measurement pass, so
+# five steps cost about five thirds of three
+MCAL_TYPES = ('noshear', '1p', '1m', '2p', '2m')
+DEFAULT_MCAL_TYPES = 'noshear,1p,1m'
+
+
+def parse_mcal_types(text):
+    """
+    validate a --mcal-types value: a comma separated subset of
+    MCAL_TYPES holding noshear, returned in MCAL_TYPES order
+    without duplicates
+    """
+    import argparse
+    types = [t.strip() for t in text.split(',') if t.strip()]
+    bad = [t for t in types if t not in MCAL_TYPES]
+    if bad or 'noshear' not in types:
+        raise argparse.ArgumentTypeError(
+            f'expected a comma separated subset of '
+            f'{",".join(MCAL_TYPES)} including noshear, got {text!r}'
+        )
+    return ','.join(t for t in MCAL_TYPES if t in types)
 
 
 def parse_target_psf(text):
@@ -804,6 +835,9 @@ def process_patch(args):
     # module-level so the whole metacal stage and the provenance
     # record (read at output time) see the requested target psf
     METACAL_SETTINGS['target_psf'] = args.target_psf
+    METACAL_SETTINGS['types'] = parse_mcal_types(
+        getattr(args, 'mcal_types', DEFAULT_MCAL_TYPES)
+    )
 
     main(
         with_mdet=args.mdet,
