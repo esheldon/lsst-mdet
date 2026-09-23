@@ -51,3 +51,17 @@ just needs to be copied in
 possibly support gaia stars from Xiangchong's files
 ---------------------------------------------------
 sending a file path would override the query
+
+globular cluster mask (noted 2026-09-23)
+----------------------------------------
+A post-processing footprint cut around the Galactic globular
+clusters, like the star-proximity exclusion: a circle per cluster
+from a cluster catalog (Harris 1996/2010 or Baumgardt), radius tied
+to the half-light or tidal radius.  Not done in run-dp2-v01.1.
+Seen so far: M30 (05891-00042: 4085 census stars, 39 percent of the
+patch masked, the slowest mop-up patch), M75 (06103-00023/24),
+NGC 7492 (07059-00058); M55 (04779-00025) and M72 (07509-00052)
+were skipped patches in v00.  First step: match a cluster catalog
+against run-dp2-v01.1-footprint.hsp to find them all; the shear
+density map (stats/, nside 2048) should show them as spikes.  The
+HyperLEDA galaxy mask does not cover clusters.
