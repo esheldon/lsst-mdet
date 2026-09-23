@@ -176,8 +176,9 @@ def star_exclusion_radii(gmag, boundary=EXCLUSION_BOUNDARY,
                          faint_radius=EXCLUSION_FAINT_RADIUS):
     """
     the star exclusion radius in degrees: for masked stars
-    (G < census GSUB) the mask radius law plus the taper width,
-    at the nominal 0.2 arcsec pixel scale, plus the boundary;
+    (G < census GSUB) the output mask radius (the mask radius law,
+    or the ghost-disk radius for the brightest stars) plus the taper
+    width, at the nominal 0.2 arcsec pixel scale, plus the boundary;
     for fainter (unmasked) stars the fixed faint radius
 
     Parameters
@@ -193,10 +194,13 @@ def star_exclusion_radii(gmag, boundary=EXCLUSION_BOUNDARY,
     -------
     radius in degrees, same shape as gmag
     """
-    from lsst_starsub.census import APOD_STARS, GSUB, circle_radius
+    from lsst_starsub.census import APOD_STARS, GSUB, disk_mask_radius
+    # the output mask radius: the mask law, and the ghost-disk radius
+    # for the stars brighter than DISK_MASK_GMAX
+    gmag = np.asarray(gmag, dtype='f8')
     rad_arcsec = np.where(
-        np.asarray(gmag) < GSUB,
-        (circle_radius(gmag) + APOD_STARS) * 0.2 + boundary,
+        gmag < GSUB,
+        (disk_mask_radius(gmag) + APOD_STARS) * 0.2 + boundary,
         faint_radius,
     )
     return rad_arcsec / 3600.0
