@@ -48,7 +48,9 @@ from lsst_starsub.cli.make_gaia import (
     GAIA_PATTERN,
     select_high_latitude,
 )
-from .process_cells import parse_target_psf
+from .process_cells import (
+    DEFAULT_MCAL_TYPES, parse_mcal_types, parse_target_psf,
+)
 from .make_slurm import (
     MAX_SEED,
     format_cells,
@@ -193,7 +195,7 @@ def get_starsub_options(starsub_method, wing_pattern):
     )
 
 
-def get_node_options(max_loads=None, galaxy_file=None):
+def get_node_options(max_loads=None, galaxy_file=None, mcal_types=None):
     """
     The optional node driver options for run.sh.
 
@@ -204,13 +206,18 @@ def get_node_options(max_loads=None, galaxy_file=None):
         in the butler read stage at once on a node
     galaxy_file: str or None
         The --galaxy-file for the processing, the large-galaxy catalog
+    mcal_types: str or None
+        The --mcal-types for the processing; None or the default
+        leaves the processing's default in place
 
     Returns
     -------
     str
-        The option text, empty with neither given
+        The option text, empty with none given
     """
     text = ''
+    if mcal_types is not None and mcal_types != DEFAULT_MCAL_TYPES:
+        text += f' \\\n    --mcal-types {mcal_types}'
     if max_loads is not None:
         text += f' \\\n    --max-loads {max_loads:d}'
     if galaxy_file is not None:
@@ -220,7 +227,7 @@ def get_node_options(max_loads=None, galaxy_file=None):
 
 def write_script(
     gaia_pattern, target_psf, mdet=True, starsub_method='template',
-    wing_pattern=None, max_loads=None, galaxy_file=None,
+    wing_pattern=None, max_loads=None, galaxy_file=None, mcal_types=None,
 ):
     """
     Write run.sh.
@@ -241,6 +248,8 @@ def write_script(
         The node driver's --max-loads, see get_node_options
     galaxy_file: str or None
         The --galaxy-file for the processing, see get_node_options
+    mcal_types: str or None
+        The --mcal-types for the processing, see get_node_options
     """
     fname = 'run.sh'
 
@@ -250,7 +259,8 @@ def write_script(
             'gaia_pattern': gaia_pattern,
             'target_psf': target_psf,
             'start_interval': DEFAULT_START_INTERVAL,
-            'node_options': get_node_options(max_loads, galaxy_file),
+            'node_options': get_node_options(max_loads, galaxy_file,
+                                             mcal_types),
             'starsub': get_starsub_options(starsub_method, wing_pattern),
             'mdet': ' \\\n    --mdet' if mdet else '',
         })
@@ -697,6 +707,7 @@ def go(args):
         wing_pattern=args.wing_pattern,
         max_loads=args.max_loads,
         galaxy_file=args.galaxy_file,
+        mcal_types=args.mcal_types,
     )
     write_node_jobs(args=args, rng=rng, patch_jobs=patch_jobs)
 
@@ -809,6 +820,12 @@ def get_args():
                              'lsst_starsub.galaxies); needs '
                              '--starsub-method joint, whose segmentation '
                              'sizes the masks')
+    parser.add_argument('--mcal-types', type=parse_mcal_types,
+                        default=DEFAULT_MCAL_TYPES,
+                        help='the metacal steps for the processing, '
+                             'comma separated from noshear, 1p, 1m, '
+                             f'2p, 2m; default {DEFAULT_MCAL_TYPES}, '
+                             'add 2p,2m for the full response matrix')
     parser.add_argument('--max-loads', type=int,
                         help='at most this many patches on a node in the '
                              'butler read stage at once, capping the '

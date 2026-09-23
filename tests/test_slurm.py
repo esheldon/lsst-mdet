@@ -194,3 +194,34 @@ def test_write_script_node_options(tmp_path, monkeypatch):
     body = text[text.index('lsst-mdet-process-node'):].rstrip().splitlines()
     assert all(ln.endswith('\\') for ln in body[:-1])
     assert not body[-1].endswith('\\')
+
+
+def test_mcal_types_option(tmp_path, monkeypatch):
+    """
+    --mcal-types is validated and ordered, sets the metacal types
+    for the processing, and reaches run.sh only when not the default
+    """
+    import argparse
+
+    import pytest
+
+    from lsst_mdet.cli.make_slurm_nersc import get_node_options, write_script
+    from lsst_mdet.cli.process_cells import (
+        DEFAULT_MCAL_TYPES, parse_mcal_types,
+    )
+
+    assert parse_mcal_types('2m,1p,noshear,1m,2p') == 'noshear,1p,1m,2p,2m'
+    assert parse_mcal_types(' noshear, 1p ,1m') == DEFAULT_MCAL_TYPES
+    for bad in ('1p,1m', 'noshear,3p', ''):
+        with pytest.raises(argparse.ArgumentTypeError):
+            parse_mcal_types(bad)
+
+    assert get_node_options(mcal_types=DEFAULT_MCAL_TYPES) == ''
+    assert '--mcal-types noshear,1p,1m,2p,2m' in get_node_options(
+        mcal_types='noshear,1p,1m,2p,2m',
+    )
+    monkeypatch.chdir(tmp_path)
+    write_script('gaia-{tract:05d}.fits', 'AZGauss',
+                 mcal_types='noshear,1p,1m,2p,2m')
+    text = (tmp_path / 'run.sh').read_text()
+    assert "    --mcal-types noshear,1p,1m,2p,2m \\\n" in text
