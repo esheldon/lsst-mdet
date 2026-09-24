@@ -14,6 +14,10 @@ The star catalog needs ra, dec (degrees) and a G magnitude
 (gmag, phot_g_mean_mag or G); stars brighter than --gmax are
 used.
 
+A fourth layer, --clusters, excludes a circle around each row of a
+catalog of extended objects (the Galactic globular clusters), with
+ra, dec (degrees) and radius_arcmin per row (e.g. the tidal radius).
+
     lsst-mdet-make-star-exclusion \\
         --stars run-dp2-v00-corr-stars.fits \\
         --output run-dp2-v00-star-exclusion.hsp --nproc 128
@@ -66,6 +70,16 @@ def go(args):
             np.full(extra.size, args.extra_radius / 3600.0),
         ])
 
+    if args.clusters is not None:
+        print('reading:', args.clusters)
+        clusters = rustfits.read(args.clusters)
+        crad = np.asarray(clusters['radius_arcmin'], dtype='f8') / 60.0
+        print(f'{clusters.size} clusters at their catalog radii, '
+              f'{60 * crad.min():.1f}-{60 * crad.max():.1f} arcmin')
+        ra = np.concatenate([ra, clusters['ra'].astype('f8')])
+        dec = np.concatenate([dec, clusters['dec'].astype('f8')])
+        rad = np.concatenate([rad, crad])
+
     exmap = make_circle_exclusion_map(
         ra=ra, dec=dec, rad_deg=rad, nproc=args.nproc,
     )
@@ -116,6 +130,11 @@ def get_args():
                         default=EXCLUSION_FAINT_RADIUS,
                         help='circle radius for --extra-stars, '
                              'arcsec (default %(default)s)')
+    parser.add_argument('--clusters',
+                        help='catalog of extended objects to exclude '
+                             'whole (ra, dec, radius_arcmin), e.g. '
+                             'the Galactic globular clusters at their '
+                             'tidal radii')
     parser.add_argument('--nproc', type=int, default=8,
                         help='processes for the circle queries')
     parser.add_argument('--clobber', action='store_true',

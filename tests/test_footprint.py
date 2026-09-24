@@ -415,3 +415,48 @@ def test_get_cell_primary():
     x = np.array([mid, 0.0, 260.0])
     y = np.array([mid, mid, mid])
     assert get_cell_primary(x, y).tolist() == [True, False, False]
+
+
+def test_star_exclusion_cluster_layer(tmp_path):
+    """
+    the --clusters layer of the exclusion map: a circle of the
+    catalog radius around each cluster, on top of the star circles
+    """
+    import argparse
+
+    import healsparse
+    import numpy as np
+    import rustfits
+
+    from lsst_mdet.cli.make_star_exclusion import go
+
+    stars = np.zeros(1, dtype=[('ra', 'f8'), ('dec', 'f8'), ('gmag', 'f8')])
+    stars['ra'], stars['dec'], stars['gmag'] = 10.0, -20.0, 19.5
+    clusters = np.zeros(1, dtype=[('ra', 'f8'), ('dec', 'f8'),
+                                  ('radius_arcmin', 'f4')])
+    clusters['ra'], clusters['dec'] = 10.5, -20.0
+    clusters['radius_arcmin'] = 6.0
+    sfile = str(tmp_path / 'stars.fits')
+    cfile = str(tmp_path / 'clusters.fits')
+    with rustfits.FITS(sfile, 'w+') as f:
+        f.write_table(stars)
+    with rustfits.FITS(cfile, 'w+') as f:
+        f.write_table(clusters)
+    out = str(tmp_path / 'excl.hsp')
+    args = argparse.Namespace(
+        stars=sfile, gmax=20.0, boundary=4.0, faint_radius=6.0,
+        extra_stars=None, extra_radius=6.0, clusters=cfile, output=out,
+        nproc=1, clobber=True,
+    )
+    go(args)
+    m = healsparse.HealSparseMap.read(out)
+    # inside the cluster circle, and just outside it; the star's own
+    # 6 arcsec circle; a point far from both
+    ra = np.array([10.5, 10.5 + 5.0 / 60 / np.cos(np.radians(20.0)),
+                   10.5 + 7.0 / 60 / np.cos(np.radians(20.0)), 10.0, 12.0])
+    dec = np.full(5, -20.0)
+    vals = m.get_values_pos(ra, dec, lonlat=True) > 0
+    assert vals.tolist() == [True, True, False, True, False]
+    area = m.get_valid_area(degrees=True)
+    expected = np.pi * (6.0 / 60) ** 2
+    assert abs(area - expected) / expected < 0.02
