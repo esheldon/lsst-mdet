@@ -102,10 +102,12 @@ lsst-mdet-process-node \
     --gaia-pattern '%(gaia_pattern)s' \
     --target-psf '%(target_psf)s' \
     --redo-bg \
-    --model exp \
+    --model %(model)s \
     --deblend \
     --starsub%(starsub)s%(mdet)s
 """
+
+DEFAULT_MODEL = 'exp'
 
 SLURM_TEMPLATE = r'''#!/bin/bash
 #SBATCH --job-name=%(job_name)s
@@ -228,6 +230,7 @@ def get_node_options(max_loads=None, galaxy_file=None, mcal_types=None):
 def write_script(
     gaia_pattern, target_psf, mdet=True, starsub_method='template',
     wing_pattern=None, max_loads=None, galaxy_file=None, mcal_types=None,
+    model=DEFAULT_MODEL,
 ):
     """
     Write run.sh.
@@ -240,6 +243,9 @@ def write_script(
         The --target-psf for the processing
     mdet: bool
         Whether to pass --mdet
+    model: str
+        The --model for the processing (the fit model of the
+        deblender), default DEFAULT_MODEL
     starsub_method: str
         'template' or 'joint', see get_starsub_options
     wing_pattern: str or None
@@ -258,6 +264,7 @@ def write_script(
         fobj.write(SCRIPT % {
             'gaia_pattern': gaia_pattern,
             'target_psf': target_psf,
+            'model': model,
             'start_interval': DEFAULT_START_INTERVAL,
             'node_options': get_node_options(max_loads, galaxy_file,
                                              mcal_types),
@@ -708,6 +715,7 @@ def go(args):
         max_loads=args.max_loads,
         galaxy_file=args.galaxy_file,
         mcal_types=args.mcal_types,
+        model=args.model,
     )
     write_node_jobs(args=args, rng=rng, patch_jobs=patch_jobs)
 
@@ -785,8 +793,13 @@ def get_args():
                         help='patches to run concurrently on each node')
     parser.add_argument('--no-mdet', action='store_true',
                         help='leave out --mdet, e.g. for a quick test on '
-                             'the debug QOS: a patch then takes under 10 '
-                             'minutes instead of 30-40')
+                             'the debug QOS or a photometry-only run: '
+                             'a patch then takes under 10 minutes '
+                             'instead of 30-40')
+    parser.add_argument('--model', default=DEFAULT_MODEL,
+                        help='the --model for the processing, the fit '
+                             'model of the deblender (exp, bdf, ladder, '
+                             f'...); default {DEFAULT_MODEL}')
     packing = parser.add_mutually_exclusive_group()
     packing.add_argument('--patches-per-node', type=int,
                          help='total patches in each node job; default '
