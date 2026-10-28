@@ -30,11 +30,18 @@ STAMP_MIN = 49
 STAMP_NHLR = 10.0
 
 # the truth table columns an object injection reads: patch-frame
-# pixel position, per-band flux in nJy, the exponential's
-# half-light radius (arcsec) and shear, and whether it is a point
-# source
+# pixel position, per-band flux in nJy, the galaxy's half-light
+# radius (arcsec) and shear, and whether it is a point source.  An
+# optional column 'sersic_n' gives each galaxy's Sersic index; absent
+# or 1, the galaxy is an exponential.  A Sersic of n != 1 is
+# truncated at SERSIC_TRUNC_NHLR half-light radii with the full flux
+# inside the truncation, so the flux in the image is the truth flux
+# (an untruncated n = 4 profile has a tenth of its flux beyond 10
+# half-light radii)
 TRUTH_COLUMNS = ('x', 'y', 'flux_r', 'flux_i', 'flux_z', 'hlr',
                  'g1', 'g2', 'is_star')
+SERSIC_COLUMN = 'sersic_n'
+SERSIC_TRUNC_NHLR = 8.0
 
 # the injection request, set by the lsst-mdet-inject-node CLI
 # before processing starts (the target-psf METACAL_SETTINGS
@@ -180,12 +187,13 @@ def inject_objects(coadd, wcs, truth):
     add the truth objects to one band of a patch coadd, in place.
 
     Each object is an exponential of the given half-light radius and
-    shear (a point source where is_star), convolved with the coadd
-    psf at its position and drawn on the local affine wcs there,
-    with the band's flux in nJy.  The psf kernel image includes the
-    pixel, so the stamps are drawn without a second pixel
-    convolution.  Stamps are clipped at the image edge; the objects
-    carry no noise
+    shear (a point source where is_star; a truncated Sersic where
+    the table has SERSIC_COLUMN and it is not 1), convolved with the
+    coadd psf at its position and drawn on the local affine wcs
+    there, with the band's flux in nJy.  The psf kernel image
+    includes the pixel, so the stamps are drawn without a second
+    pixel convolution.  Stamps are clipped at the image edge; the
+    objects carry no noise
 
     Parameters
     ----------
@@ -207,6 +215,7 @@ def inject_objects(coadd, wcs, truth):
     ny, nx = image.shape
     bbox = coadd.bbox
     fcol = f'flux_{coadd.band}'
+    has_n = SERSIC_COLUMN in truth.dtype.names
     ndrawn = 0
     for obj in truth:
         x, y = float(obj['x']), float(obj['y'])
@@ -226,9 +235,15 @@ def inject_objects(coadd, wcs, truth):
             half = STAMP_MIN // 2
         else:
             hlr = float(obj['hlr'])
-            prof = galsim.Exponential(
-                half_light_radius=hlr, flux=flux,
-            ).shear(g1=float(obj['g1']), g2=float(obj['g2']))
+            sersic_n = float(obj[SERSIC_COLUMN]) if has_n else 1.0
+            if sersic_n == 1.0:
+                prof = galsim.Exponential(half_light_radius=hlr, flux=flux)
+            else:
+                prof = galsim.Sersic(
+                    n=sersic_n, half_light_radius=hlr, flux=flux,
+                    trunc=SERSIC_TRUNC_NHLR * hlr, flux_untruncated=False,
+                )
+            prof = prof.shear(g1=float(obj['g1']), g2=float(obj['g2']))
             scale = np.sqrt(abs(np.linalg.det(mat)))
             half = max(STAMP_MIN // 2,
                        int(np.ceil(STAMP_NHLR * hlr / scale)))
