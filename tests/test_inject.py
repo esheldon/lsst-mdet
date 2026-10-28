@@ -61,6 +61,37 @@ def test_inject_flux_and_position():
     assert abs((w * yy).sum() / w.sum() - 80.7) < 0.02
 
 
+def test_inject_sersic():
+    """
+    a sersic_n column selects a truncated Sersic with the truth flux
+    in the image; n = 1 is the exponential; a cuspy n = 4 profile is
+    drawn through the psf without losing flux
+    """
+    import numpy.lib.recfunctions as rf
+
+    coadd = make_coadd()
+    truth = make_truth([
+        dict(x=60.0, y=60.0, flux_r=1000.0, hlr=0.4, g1=0.0, g2=0.1),
+        dict(x=180.0, y=140.0, flux_r=1000.0, hlr=0.4, g1=0.0, g2=0.1),
+    ])
+    truth = rf.append_fields(truth, 'sersic_n', [1.0, 4.0], usemask=False)
+    assert inject_objects(coadd, FakeWcs(), truth) == 2
+    im = coadd.image.array
+    assert abs(im.sum() / 2000.0 - 1) < 0.005
+    # the two profiles differ (the truncated n = 4 carries more of
+    # its flux in the wings than the exponential)
+    exp_cut = im[40:81, 40:81]
+    ser_cut = im[120:161, 160:201]
+    assert np.abs(ser_cut - exp_cut).max() > 0.05 * exp_cut.max()
+    assert ser_cut[10:31, 10:31].sum() < exp_cut[10:31, 10:31].sum()
+    # the same objects without the column are both exponentials
+    coadd2 = make_coadd()
+    inject_objects(coadd2, FakeWcs(), truth[list(TRUTH_COLUMNS)])
+    im2 = coadd2.image.array
+    assert abs(im2.sum() / 2000.0 - 1) < 0.005
+    assert np.allclose(im2[120:161, 160:201], im2[40:81, 40:81])
+
+
 def test_inject_clipped_at_edge():
     coadd = make_coadd()
     truth = make_truth([dict(x=2.0, y=198.0, flux_r=1000.0, is_star=True)])

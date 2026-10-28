@@ -225,3 +225,20 @@ def test_mcal_types_option(tmp_path, monkeypatch):
                  mcal_types='noshear,1p,1m,2p,2m')
     text = (tmp_path / 'run.sh').read_text()
     assert "    --mcal-types noshear,1p,1m,2p,2m \\\n" in text
+
+
+def test_model_option(tmp_path, monkeypatch):
+    """
+    the fit model reaches run.sh, exp by default
+    """
+    from lsst_mdet.cli.make_slurm_nersc import write_script
+
+    monkeypatch.chdir(tmp_path)
+    write_script('gaia-{tract:05d}.fits', 'AZGauss')
+    assert "    --model exp \\\n" in (tmp_path / 'run.sh').read_text()
+
+    write_script('gaia-{tract:05d}.fits', 'AZGauss', model='ladder',
+                 mdet=False)
+    text = (tmp_path / 'run.sh').read_text()
+    assert "    --model ladder \\\n" in text
+    assert '--mdet' not in text
