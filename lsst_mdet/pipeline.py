@@ -100,12 +100,12 @@ def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):
     else:
         print('psf_failure:', psf_res['psf_flags'])
 
-        import matplotlib.pyplot as mplt
-        fig, axs = mplt.subplots(ncols=3)
-        for i, obslist in enumerate(mbobs):
-            axs[i].imshow(obslist[0].psf.image)
-            axs[i].set_title(obslist[0].meta['band'])
-        fig.savefig('bad-psfs.png', dpi=150)
+        # import matplotlib.pyplot as mplt
+        # fig, axs = mplt.subplots(ncols=3)
+        # for i, obslist in enumerate(mbobs):
+        #     axs[i].imshow(obslist[0].psf.image)
+        #     axs[i].set_title(obslist[0].meta['band'])
+        # fig.savefig('bad-psfs.png', dpi=150)
 
         # can't do extra without a psf
         cat = get_struct(bands=bands, n=sxcat.size, model=model)
@@ -113,6 +113,9 @@ def process_one_mbobs(mbobs, model, deblend, s2_detect, rng, show):
         cat['xcell'] = sxcat['x']
         cat['ycell'] = sxcat['y']
 
+        # the per-band psf flags and sizes, so the rows record
+        # which band's fit failed (the struct's defaults say nothing)
+        _set_mcal_psfs(st=cat, psf_res=psf_res)
         cat['flags'] = PSF_FAILURE
 
     # one mfrac for every row (sep, deblend groups, extras)

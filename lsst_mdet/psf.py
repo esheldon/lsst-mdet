@@ -24,15 +24,19 @@ def fit_and_set_mcal_psfs(mbobs, weights, rng):
         band = obs.meta['band']
         psf_obs = obs.psf
 
-        # this will set the gmix
+        # a successful fit sets the gmix; a failed one (every try
+        # of the adaptive moments failed, which happens for the
+        # original coadd psf of a rare cell on the photometry-only
+        # route, never for the smooth reconvolved metacal psf) leaves
+        # it unset and reports its flags, and the caller flags the
+        # cell's detections PSF_FAILURE
         assert not psf_obs.has_gmix()
         psf_res = psf_runner.go(psf_obs)
-        assert psf_obs.has_gmix()
 
         res[f'psf_flags_{band}'] = psf_res['flags']
         res['psf_flags'] |= psf_res['flags']
 
-        if psf_res['flags'] == 0:
+        if psf_res['flags'] == 0 and psf_obs.has_gmix():
             g1, g2, T = obs.psf.gmix.get_g1g2T()
             res[f'psf_T_{band}'] = T
 
