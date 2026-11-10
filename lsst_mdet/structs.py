@@ -139,8 +139,8 @@ def get_struct(bands, n=1, model=None):
 
 def _init_struct(dtype, n):
     """
-    build the array, initializing flags to 1, extra_det to 0 and
-    everything else to nan
+    build the array, initializing flags to 1, the bool columns
+    (extra_det, is_primary) to False and everything else to nan
     """
     import numpy as np
 
@@ -149,6 +149,11 @@ def _init_struct(dtype, n):
     for name in output.dtype.names:
         if 'flags' in name:
             output[name] = NO_ATTEMPT
+        elif output.dtype[name].kind == 'b':
+            # nan cast to bool is True: the catalogs through
+            # v0.3.3 carry extra_det True on every row for this
+            # reason (the deblend sets only the extra rows)
+            output[name] = False
         elif name in (
             'numiter', 'group_size', 'cell_i', 'cell_j',
         ):
