@@ -7,15 +7,43 @@ from .detect import get_detect_noise, make_kernel
 # provenance.py): the sheared types run on the image, the type the
 # noise field is run with (the fusion filter takes the max over
 # the requested types; 1p reproduces the sheared-pair envelope),
-# and the names of the metacal target psf and noise filter classes.
-# target_psf can also be a fixed round gaussian 'Gauss:<fwhm>',
-# see get_target_psf
+# and the names of the metacal target psf, noise filter and noise
+# kernel classes.  target_psf can also be a fixed round gaussian
+# 'Gauss:<fwhm>', see get_target_psf.  The noise kernel is the
+# impulse response of the process that made the noise, which the
+# fusion correction pushes through the metacal operations;
+# DeltaImpulse is white noise, what the correction assumed before
+# metacal took the kernel as an argument, see get_noise_kernel
 METACAL_SETTINGS = dict(
     types='noshear,1p,1m',
     noise_types='1p',
     target_psf='AZGauss',
     noise_filter='FusionFilter',
+    noise_kernel='DeltaImpulse',
 )
+
+# the noise kernel classes that are made without arguments
+NOISE_KERNELS = ('DeltaImpulse',)
+
+
+def get_noise_kernel():
+    """
+    the noise kernel for the metacal noise correction from the
+    settings: the name of a class of the metacal package that is
+    made without arguments.  Only DeltaImpulse (white noise) is
+    supported; a kernel for correlated noise
+    (metacal.ImpulseResponse) needs the noise autocorrelation of
+    the coadds, which is not measured here
+    """
+    import metacal
+
+    name = METACAL_SETTINGS['noise_kernel']
+    if name not in NOISE_KERNELS:
+        raise ValueError(
+            f"METACAL_SETTINGS['noise_kernel'] must be one of "
+            f'{NOISE_KERNELS}, got {name!r}'
+        )
+    return getattr(metacal, name)()
 
 
 def get_target_psf():
@@ -161,6 +189,7 @@ def run_metacal(obs, rng, types):
         obs=obs,
         target_psf=target_psf,
         noise_filter=noise_filter,
+        noise_kernel=get_noise_kernel(),
         rng=rng,
         types=types,
     )
