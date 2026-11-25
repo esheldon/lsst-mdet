@@ -47,7 +47,43 @@ DEBLEND_SETTINGS = dict(
     # rows in 16 scenes); pinning the extras only, with the sep
     # rows recentered, is the validated stable setting
     extra_fixcen=True,
+    # the noise autocovariance for the full errors is measured
+    # once per band from the whole noise field handed to
+    # fit_deblend (the cell), to lags of this many pixels, and
+    # used for every group (cell_noise_autocovs).  Negative: off,
+    # and kdeblend measures it from the noise image of each
+    # group's cutout, which is noisy: the errors of an isolated
+    # faint object then scatter by 20 percent from that estimate
+    # alone (run-dp2-v01.1 patches, 2026-11-23)
+    noise_max_lag=32,
 )
+
+
+def cell_noise_autocovs(mbobs, max_lag):
+    """
+    the noise autocovariance of each band, from the noise field
+    of its observation over the good pixels (weight > 0)
+
+    Parameters
+    ----------
+    mbobs: ngmix.MultiBandObsList
+        One observation per band, with the noise field attached
+    max_lag: int
+        The largest lag kept, in pixels
+
+    Returns
+    -------
+    list of (2 max_lag + 1, 2 max_lag + 1) arrays, one per band;
+    see ngmix.prepsfadmom.full_errors.noise_autocov
+    """
+    from ngmix.prepsfadmom.full_errors import noise_autocov
+
+    return [
+        noise_autocov(
+            obslist[0].noise, weight=obslist[0].weight, max_lag=max_lag,
+        )
+        for obslist in mbobs
+    ]
 
 
 def fit_deblend(
@@ -144,6 +180,10 @@ def fit_deblend(
                 'each band observation must have a noise field for '
                 'the per-mode noise power'
             )
+
+    noise_autocovs = None
+    if full_errors and s['noise_max_lag'] >= 0:
+        noise_autocovs = cell_noise_autocovs(mbobs, s['noise_max_lag'])
 
     jacobian = mbobs[0][0].jacobian
     scale = jacobian.scale
@@ -245,6 +285,7 @@ def fit_deblend(
                 cen_sigma0=cen_sigma0,
                 e_sigma0=e_sigma0,
                 full_errors=full_errors,
+                noise_autocovs=noise_autocovs,
             )
 
             for i, obj_res in zip(group, res['objects']):
@@ -312,6 +353,7 @@ def fit_one_group(
     cen_sigma0,
     e_sigma0,
     full_errors,
+    noise_autocovs=None,
 ):
     """
     cut and fit one deblend group with the configured parameters.
@@ -363,6 +405,7 @@ def fit_one_group(
         cen_sigma0=cen_sigma0,
         e_sigma0=e_sigma0,
         full_errors=full_errors,
+        noise_autocov=noise_autocovs,
         anchor_sigma=(
             anchor_covs(sxcat, group, nsx, scale)
             if full_errors and recenter else 0.0

@@ -49,14 +49,22 @@ jobs:
             ruff
 
           # conda ngmix pulls in the full dependency tree from the
-          # feedstock; then swap in the kspace-admom branch, which
-          # has prepsfadmom (not yet in a release).  Drop this and
-          # use the conda ngmix alone when that PR is merged and
+          # feedstock; then swap in ngmix master, which has
+          # prepsfadmom and the full errors (not yet in a release).
+          # Drop this and use the conda ngmix alone when they are
           # released.  --no-deps so pip never pulls packages over
           # the conda environment
           conda remove --force ngmix ngmix-core
           python -m pip install --no-deps \
-            git+https://github.com/esheldon/ngmix.git@kspace-admom
+            git+https://github.com/esheldon/ngmix.git@master
+
+          # likewise metacal: the conda package brings its
+          # dependencies, then swap in master, which has the noise
+          # kernel argument of the noise correction (not yet in a
+          # release).  Drop this when it is released
+          conda remove --force metacal
+          python -m pip install --no-deps \
+            git+https://github.com/esheldon/metacal.git@master
 
           # kdeblend is not yet packaged; install from github
           python -m pip install --no-deps \
